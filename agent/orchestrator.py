@@ -69,57 +69,61 @@ class Orchestrator:
         else:
             run_id = self.store.create_run(goal=goal, target=target)
 
-        # Step 1: Crawl
-        raw_data = await self._crawl(plan)
+        try:
+            # Step 1: Crawl
+            raw_data = await self._crawl(plan)
 
-        # Step 2: Normalize
-        people = self.normalizer.normalize(raw_data)
-        for person in people:
-            self.store.save_person(run_id=run_id, person={
-                k: person.get(k) for k in
-                ["linkedin_id", "name", "title", "department", "confidence"]
-                if person.get(k)
-            })
+            # Step 2: Normalize
+            people = self.normalizer.normalize(raw_data)
+            for person in people:
+                self.store.save_person(run_id=run_id, person={
+                    k: person.get(k) for k in
+                    ["linkedin_id", "name", "title", "department", "confidence"]
+                    if person.get(k)
+                })
 
-        # Step 3: Analyze
-        quant_result = await QuantAgent().run(people=people)
-        qual_result = await QualAgent().run(people=people)
+            # Step 3: Analyze
+            quant_result = await QuantAgent().run(people=people)
+            qual_result = await QualAgent().run(people=people)
 
-        # Step 4: Change detection
-        prior_run = self.store.get_latest_run_for_target(target, exclude_run_id=run_id)
-        changes_dicts: List[dict] = []
-        if prior_run:
-            changes = self.store.diff_runs(prior_run_id=prior_run.id, current_run_id=run_id)
-            changes_dicts = [
-                {
-                    "change_type": c.change_type,
-                    "person_name": c.person_name,
-                    "from_value": c.from_value,
-                    "to_value": c.to_value,
-                }
-                for c in changes
-            ]
+            # Step 4: Change detection
+            prior_run = self.store.get_latest_run_for_target(target, exclude_run_id=run_id)
+            changes_dicts: List[dict] = []
+            if prior_run:
+                changes = self.store.diff_runs(prior_run_id=prior_run.id, current_run_id=run_id)
+                changes_dicts = [
+                    {
+                        "change_type": c.change_type,
+                        "person_name": c.person_name,
+                        "from_value": c.from_value,
+                        "to_value": c.to_value,
+                    }
+                    for c in changes
+                ]
 
-        # Step 5: Render
-        viz = VizAgent()
-        html = viz.render(
-            graph=quant_result["graph"],
-            qual=qual_result,
-            stats=quant_result["stats"],
-            run_id=run_id,
-            changes=changes_dicts,
-        )
-        report_path = viz.save(html, run_id=run_id, output_dir=self.output_dir)
+            # Step 5: Render
+            viz = VizAgent()
+            html = viz.render(
+                graph=quant_result["graph"],
+                qual=qual_result,
+                stats=quant_result["stats"],
+                run_id=run_id,
+                changes=changes_dicts,
+            )
+            report_path = viz.save(html, run_id=run_id, output_dir=self.output_dir)
 
-        self.store.complete_run(run_id)
-        logger.info("Pipeline complete. Report: %s", report_path)
+            self.store.complete_run(run_id)
+            logger.info("Pipeline complete. Report: %s", report_path)
 
-        return {
-            "run_id": run_id,
-            "report_path": report_path,
-            "changes": changes_dicts,
-            "people_count": len(people),
-        }
+            return {
+                "run_id": run_id,
+                "report_path": report_path,
+                "changes": changes_dicts,
+                "people_count": len(people),
+            }
+        except Exception:
+            self.store.fail_run(run_id)
+            raise
 
     def _classify_goal(self, goal: str) -> dict:
         prompt = CLASSIFY_PROMPT.format(goal=goal)

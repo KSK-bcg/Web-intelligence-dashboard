@@ -62,6 +62,15 @@ class Store:
                 session.add(run)
                 session.commit()
 
+    def fail_run(self, run_id: str):
+        with Session(self.engine) as session:
+            run = session.get(RunRecord, run_id)
+            if run:
+                run.status = "failed"
+                run.completed_at = datetime.utcnow()
+                session.add(run)
+                session.commit()
+
     def list_runs(self) -> List[RunRecord]:
         with Session(self.engine) as session:
             return list(session.exec(select(RunRecord).order_by(RunRecord.created_at.desc())))
