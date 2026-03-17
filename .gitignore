@@ -1,0 +1,11 @@
+.env
+output/
+*.db
+__pycache__/
+.pytest_cache/
+.playwright/
+node_modules/
+.next/
+*.pyc
+.venv/
+cassettes/
