@@ -59,3 +59,24 @@ class DatabaseLockError(WebIntelligenceError):
 
 class StorageCapacityError(WebIntelligenceError):
     """Disk is full or storage quota exceeded."""
+
+# v2: Competitive Intelligence
+class FilingsFetchError(WebIntelligenceError):
+    """Failed to fetch financial filing from SEC EDGAR or IR page."""
+    pass
+
+class FilingsParseError(WebIntelligenceError):
+    """Failed to parse filing content into structured data."""
+    pass
+
+class EarningsFetchError(WebIntelligenceError):
+    """Failed to fetch earnings transcript or analyst content."""
+    pass
+
+class FinancialExtractionError(WebIntelligenceError):
+    """Claude failed to extract financial metrics from filing text."""
+    pass
+
+class PPTXRenderError(WebIntelligenceError):
+    """Failed to render the BCG PowerPoint deck."""
+    pass

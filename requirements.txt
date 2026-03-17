@@ -26,3 +26,5 @@ respx>=0.21.0
 
 # Export (v2 ready)
 weasyprint>=62.0
+python-pptx>=0.6.21
+matplotlib>=3.8
