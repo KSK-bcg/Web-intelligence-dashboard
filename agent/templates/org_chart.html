@@ -103,16 +103,21 @@ if (changesData && changesData.length) {
 const nodeMap = {};
 graphData.nodes.forEach(function(n) { nodeMap[n.linkedin_id] = Object.assign({}, n, {children: []}); });
 
-let root = null;
+const roots = [];
 graphData.nodes.forEach(function(n) {
   if (n.reports_to && nodeMap[n.reports_to]) {
     nodeMap[n.reports_to].children.push(nodeMap[n.linkedin_id]);
-  } else if (!n.reports_to) {
-    root = nodeMap[n.linkedin_id];
+  } else {
+    roots.push(nodeMap[n.linkedin_id]);
   }
 });
 
-if (!root && graphData.nodes.length > 0) root = nodeMap[graphData.nodes[0].linkedin_id];
+let root = null;
+if (roots.length === 1) {
+  root = roots[0];
+} else if (roots.length > 1) {
+  root = { linkedin_id: '__root__', name: 'BMS IT', title: '', department: '', confidence: 'high', children: roots };
+}
 
 if (!root) {
   document.getElementById('chart-area').innerHTML = '<p style="padding:40px;color:#94a3b8">No org data to display.</p>';

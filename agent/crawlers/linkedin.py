@@ -47,11 +47,21 @@ class LinkedInCrawler(BaseAgent):
             raise LinkedInAuthExpiredError(
                 "No LinkedIn session cookies found. Run: python run.py --setup-linkedin"
             )
+        # Normalize sameSite values from Cookie-Editor format to Playwright format
+        _same_site_map = {"no_restriction": "None", "lax": "Lax", "strict": "Strict"}
+        playwright_cookies = []
+        for c in cookies:
+            pc = {k: v for k, v in c.items() if k not in ("expirationDate", "hostOnly", "storeId", "session")}
+            raw_ss = (pc.get("sameSite") or "").lower()
+            pc["sameSite"] = _same_site_map.get(raw_ss, "None")
+            if "expirationDate" in c:
+                pc["expires"] = c["expirationDate"]
+            playwright_cookies.append(pc)
         results = []
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
             context = await browser.new_context()
-            await context.add_cookies(cookies)
+            await context.add_cookies(playwright_cookies)
             page = await context.new_page()
             try:
                 async for person in self._crawl_company(page, company_name, department_filter):
@@ -77,13 +87,19 @@ class LinkedInCrawler(BaseAgent):
         await self._check_auth(page)
         await self._random_delay()
 
+        # Collect all hrefs as strings before any navigation (handles go stale on navigate)
         profile_links = await page.query_selector_all('a[href*="/in/"]')
+        hrefs = []
+        for link in profile_links:
+            try:
+                href = await link.get_attribute("href")
+                if href:
+                    hrefs.append(href)
+            except Exception:
+                continue
         seen_ids = set()
 
-        for link in profile_links:
-            href = await link.get_attribute("href")
-            if not href:
-                continue
+        for href in hrefs:
             match = re.search(r'/in/([^/?]+)', href)
             if not match:
                 continue
@@ -121,8 +137,18 @@ class LinkedInCrawler(BaseAgent):
         return await self._extract_profile_data(page)
 
     async def _extract_profile_data(self, page: Page):
-        name = await self._safe_text(page, "h1.text-heading-xlarge")
-        title = await self._safe_text(page, "div.text-body-medium.break-words")
+        # Try multiple selectors — LinkedIn's DOM changes frequently
+        name = (
+            await self._safe_text(page, "h1.text-heading-xlarge") or
+            await self._safe_text(page, "h1[class*='heading']") or
+            await self._safe_text(page, "h1") or
+            await self._safe_text(page, ".pv-text-details__left-panel h1")
+        )
+        title = (
+            await self._safe_text(page, "div.text-body-medium.break-words") or
+            await self._safe_text(page, ".pv-text-details__left-panel .text-body-medium") or
+            await self._safe_text(page, "[data-generated-suggestion-target] .text-body-medium")
+        )
         about = await self._safe_text(page, "div.pv-shared-text-with-see-more")
         match = re.search(r'/in/([^/?]+)', page.url)
         linkedin_id = match.group(1) if match else "unknown"

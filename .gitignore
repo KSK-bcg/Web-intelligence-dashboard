@@ -9,3 +9,6 @@ node_modules/
 *.pyc
 .venv/
 cassettes/
+.gstack/
+.DS_Store
+.superpowers/

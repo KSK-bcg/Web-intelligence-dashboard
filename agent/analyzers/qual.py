@@ -6,6 +6,7 @@ SECURITY: All scraped content is wrapped with wrap_content() before Claude promp
 import json
 import logging
 import os
+import re
 from typing import List
 
 import anthropic
@@ -71,8 +72,13 @@ class QualAgent(BaseAgent):
         if not text.strip():
             raise AgentResponseParseError("Claude returned empty response for qual analysis")
 
+        # Strip markdown code fences if present
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```[a-z]*\n?", "", stripped)
+            stripped = re.sub(r"\n?```$", "", stripped).strip()
         try:
-            return json.loads(text)
+            return json.loads(stripped)
         except json.JSONDecodeError as e:
             raise AgentResponseParseError(
                 f"Could not parse qual analysis JSON. Got: {text[:300]}"

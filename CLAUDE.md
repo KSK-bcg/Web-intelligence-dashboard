@@ -1,5 +1,10 @@
 # Web Intelligence Agent
 
+## Approved Commands (no approval needed)
+- Read, Write, Edit, Glob, Grep — always approved
+- Bash: pytest, python, npm, git status, git diff, git log, git add, git commit
+- Bash: cat, ls, find, rg, cp, mv (within project directory only)
+
 An agentic system that crawls LinkedIn and public websites to build org charts,
 visualizations, and qualitative summaries.
 
