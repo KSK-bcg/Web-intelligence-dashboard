@@ -59,9 +59,15 @@ class EarningsCrawler:
         except Exception as e:
             raise EarningsFetchError(f"Firecrawl search failed: {e}") from e
 
+        # firecrawl-py v4 returns SearchData with .web list of SearchResultWeb objects
+        if hasattr(search_results, "web"):
+            search_results = search_results.web or []
+        elif hasattr(search_results, "data"):
+            search_results = search_results.data or []
+
         company_name = companies[0] if companies else ""
 
-        for item in search_results[:max_results]:
+        for item in list(search_results)[:max_results]:
             if len(results) >= max_results:
                 break
             url = getattr(item, "url", None) or (item.get("url") if isinstance(item, dict) else None)
@@ -69,8 +75,8 @@ class EarningsCrawler:
             if not url:
                 continue
 
-            # Try to get body from search result first, fall back to scrape
-            body = getattr(item, "markdown", None) or (item.get("markdown") if isinstance(item, dict) else None)
+            # SearchResultWeb has no markdown — always scrape for content
+            body = None
             if not body:
                 try:
                     scrape = self._app.scrape(url, formats=["markdown"])

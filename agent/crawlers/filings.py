@@ -80,8 +80,14 @@ class FilingsCrawler:
         except Exception as e:
             raise FilingsFetchError(f"Firecrawl search failed for {company}: {e}") from e
 
+        # firecrawl-py v4 returns SearchData with .web list of SearchResultWeb objects
+        if hasattr(search_results, "web"):
+            search_results = search_results.web or []
+        elif hasattr(search_results, "data"):
+            search_results = search_results.data or []
+
         items: List[Dict[str, Any]] = []
-        for result in search_results[:2]:
+        for result in list(search_results)[:2]:
             url = getattr(result, "url", None) or (result.get("url") if isinstance(result, dict) else None)
             if not url:
                 continue
