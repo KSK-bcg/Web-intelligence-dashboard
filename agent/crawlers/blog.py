@@ -2,6 +2,7 @@
 """
 Blog/News Crawler — uses Firecrawl API for public sites.
 No browser automation needed for public pages.
+Compatible with firecrawl-py v4+ (scrape/crawl, not scrape_url/crawl_url).
 """
 import logging
 import os
@@ -31,7 +32,7 @@ class BlogCrawler(BaseAgent):
     def verify_auth(self) -> None:
         """Fail-fast: test Firecrawl auth before any crawl begins."""
         try:
-            self.client.scrape_url("https://example.com")
+            self.client.scrape("https://example.com")
         except Exception as e:
             if "unauthorized" in str(e).lower() or "401" in str(e):
                 raise FirecrawlAuthError(
@@ -41,7 +42,7 @@ class BlogCrawler(BaseAgent):
     async def run(self, url: str, max_pages: int = 10):
         """Crawl a blog/news site. Returns list of article dicts."""
         try:
-            response = self.client.crawl_url(
+            response = self.client.crawl(
                 url,
                 params={"limit": max_pages, "scrapeOptions": {"formats": ["markdown"]}},
             )
@@ -49,22 +50,43 @@ class BlogCrawler(BaseAgent):
             raise FirecrawlFetchError(f"Failed to crawl {url}: {e}") from e
 
         articles = []
-        for item in response.get("data", []):
-            articles.append({
-                "title": item.get("metadata", {}).get("title", "Untitled"),
-                "body": item.get("markdown", ""),
-                "source_url": item.get("metadata", {}).get("sourceURL", url),
-                "source": "blog",
-            })
+        # v4 response: response.data is a list of ScrapeResponse objects
+        data = response.data if hasattr(response, "data") else response.get("data", [])
+        for item in data:
+            if hasattr(item, "markdown"):
+                # v4 object-style response
+                metadata = item.metadata or {}
+                articles.append({
+                    "title": getattr(metadata, "title", None) or metadata.get("title", "Untitled"),
+                    "body": item.markdown or "",
+                    "source_url": getattr(metadata, "source_url", None) or metadata.get("sourceURL", url),
+                    "source": "blog",
+                })
+            else:
+                # dict-style fallback
+                articles.append({
+                    "title": item.get("metadata", {}).get("title", "Untitled"),
+                    "body": item.get("markdown", ""),
+                    "source_url": item.get("metadata", {}).get("sourceURL", url),
+                    "source": "blog",
+                })
         return articles
 
     async def _scrape_url(self, url: str):
         """Scrape a single URL. Returns article dict."""
         try:
-            result = self.client.scrape_url(url, params={"formats": ["markdown"]})
+            result = self.client.scrape(url)
         except Exception as e:
             raise FirecrawlFetchError(f"Failed to scrape {url}: {e}") from e
 
+        if hasattr(result, "markdown"):
+            metadata = result.metadata or {}
+            return {
+                "title": getattr(metadata, "title", None) or metadata.get("title", "Untitled"),
+                "body": result.markdown or "",
+                "source_url": url,
+                "source": "blog",
+            }
         return {
             "title": result.get("metadata", {}).get("title", "Untitled"),
             "body": result.get("markdown", ""),
