@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -93,8 +93,18 @@ def list_runs(_: str = Depends(verify_api_key)):
     ]
 
 
+def verify_api_key_query(
+    x_api_key: Optional[str] = Header(None),
+    api_key: Optional[str] = Query(None, alias="x-api-key"),
+):
+    key = x_api_key or api_key
+    expected = os.environ.get("API_SECRET_KEY", "change-me-local-only")
+    if key != expected:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
 @app.get("/report/{run_id}")
-def get_report(run_id: str, _: str = Depends(verify_api_key)):
+def get_report(run_id: str, _: None = Depends(verify_api_key_query)):
     path = Path(f"output/{run_id}/report.html")
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Report not found: {run_id}")

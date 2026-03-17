@@ -106,14 +106,16 @@ export default function Home() {
                     </span>
                   </p>
                 </div>
-                <a
-                  href={getReportUrl(run.id)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-blue-400 hover:text-blue-300 ml-4 shrink-0"
-                >
-                  Open Report →
-                </a>
+                {run.status === "complete" && (
+                  <a
+                    href={getReportUrl(run.id)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-blue-400 hover:text-blue-300 ml-4 shrink-0"
+                  >
+                    Open Report →
+                  </a>
+                )}
               </div>
             ))}
           </div>
