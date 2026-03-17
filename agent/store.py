@@ -1,4 +1,5 @@
 import uuid
+from uuid import uuid4
 from datetime import datetime
 from typing import Optional, List
 from sqlmodel import SQLModel, Field, Session, create_engine, select
@@ -33,6 +34,22 @@ class ChangeEvent(SQLModel, table=True):
     from_value: Optional[str] = None
     to_value: Optional[str] = None
     detected_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FinancialRecord(SQLModel, table=True):
+    id: str = Field(default_factory=lambda: str(uuid4())[:8], primary_key=True)
+    run_id: str = Field(index=True)
+    company: str
+    period: str
+    revenue_usd_millions: Optional[float] = None
+    revenue_yoy_growth_pct: Optional[float] = None
+    gross_margin_pct: Optional[float] = None
+    operating_margin_pct: Optional[float] = None
+    net_margin_pct: Optional[float] = None
+    ebitda_usd_millions: Optional[float] = None
+    rd_spend_pct_revenue: Optional[float] = None
+    capex_pct_revenue: Optional[float] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class Store:
@@ -74,6 +91,33 @@ class Store:
     def list_runs(self) -> List[RunRecord]:
         with Session(self.engine) as session:
             return list(session.exec(select(RunRecord).order_by(RunRecord.created_at.desc())))
+
+    def save_financial(self, run_id: str, financial: dict) -> "FinancialRecord":
+        metrics = financial.get("metrics", {})
+        record = FinancialRecord(
+            run_id=run_id,
+            company=financial.get("company", ""),
+            period=financial.get("period", ""),
+            revenue_usd_millions=metrics.get("revenue_usd_millions"),
+            revenue_yoy_growth_pct=metrics.get("revenue_yoy_growth_pct"),
+            gross_margin_pct=metrics.get("gross_margin_pct"),
+            operating_margin_pct=metrics.get("operating_margin_pct"),
+            net_margin_pct=metrics.get("net_margin_pct"),
+            ebitda_usd_millions=metrics.get("ebitda_usd_millions"),
+            rd_spend_pct_revenue=metrics.get("rd_spend_pct_revenue"),
+            capex_pct_revenue=metrics.get("capex_pct_revenue"),
+        )
+        with Session(self.engine) as session:
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+        return record
+
+    def list_financials(self, run_id: str) -> List["FinancialRecord"]:
+        with Session(self.engine) as session:
+            return list(session.exec(
+                select(FinancialRecord).where(FinancialRecord.run_id == run_id)
+            ))
 
     def save_person(self, run_id: str, person: dict) -> PersonRecord:
         record = PersonRecord(run_id=run_id, **person)
