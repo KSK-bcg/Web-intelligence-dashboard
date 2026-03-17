@@ -28,12 +28,14 @@ export interface RunResult {
 }
 
 async function apiError(res: Response, fallback: string): Promise<never> {
+  let detail = fallback;
   try {
     const body = await res.json();
-    throw new Error(body.detail ?? fallback);
+    if (body.detail) detail = String(body.detail);
   } catch {
-    throw new Error(fallback);
+    // JSON parse failed — use fallback
   }
+  throw new Error(detail);
 }
 
 export async function listRuns(): Promise<Run[]> {
