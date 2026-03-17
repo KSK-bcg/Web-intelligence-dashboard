@@ -24,9 +24,14 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Web Intelligence Agent API", docs_url=None, redoc_url=None)
 
+_cors_origins = os.environ.get(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:3001",
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js dev server only
+    allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
