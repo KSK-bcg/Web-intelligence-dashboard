@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Org Intelligence Report — $RUN_ID</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+    header { padding: 24px 32px; background: #1e293b; border-bottom: 1px solid #334155; }
+    header h1 { font-size: 20px; font-weight: 600; }
+    header p { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+    .layout { display: grid; grid-template-columns: 1fr 340px; height: calc(100vh - 80px); }
+    #chart-area { overflow: hidden; position: relative; }
+    .sidebar { background: #1e293b; border-left: 1px solid #334155; overflow-y: auto; padding: 20px; }
+    .sidebar h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-bottom: 12px; margin-top: 20px; }
+    .sidebar h3:first-child { margin-top: 0; }
+    .summary-text { font-size: 13px; line-height: 1.7; color: #cbd5e1; display: block; margin-bottom: 16px; }
+    .stat-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155; font-size: 13px; }
+    .theme-tag { display: inline-block; background: #1d4ed8; color: #bfdbfe; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin: 2px; }
+    .tech-tag { display: inline-block; background: #0f766e; color: #99f6e4; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin: 2px; }
+    .change-item { padding: 8px; border-radius: 6px; margin-bottom: 8px; font-size: 12px; background: #1e3a5f; }
+    .change-item.new_hire { border-left: 3px solid #22c55e; }
+    .change-item.promotion { border-left: 3px solid #f59e0b; }
+    .change-item.departure { border-left: 3px solid #ef4444; }
+    .node circle { cursor: pointer; stroke-width: 2; }
+    .node text { font-size: 11px; fill: #e2e8f0; pointer-events: none; }
+    .node .dept-label { font-size: 9px; fill: #94a3b8; }
+    .link { fill: none; stroke: #334155; stroke-width: 1.5; }
+    .confidence-high circle { stroke: #22c55e; }
+    .confidence-medium circle { stroke: #f59e0b; }
+    .confidence-low circle { stroke: #ef4444; }
+    .tooltip { position: absolute; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px; font-size: 12px; pointer-events: none; opacity: 0; max-width: 240px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Org Intelligence Report</h1>
+  <p>Run ID: $RUN_ID</p>
+</header>
+<div class="layout">
+  <div id="chart-area">
+    <div class="tooltip" id="tooltip"></div>
+  </div>
+  <div class="sidebar" id="sidebar"></div>
+</div>
+<script>
+const graphData = $GRAPH_DATA;
+const qualData = $QUAL_DATA;
+const statsData = $STATS_DATA;
+const changesData = $CHANGES_DATA;
+
+function el(tag, cls, html) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined) e.innerHTML = html;
+  return e;
+}
+
+const sidebar = document.getElementById('sidebar');
+
+sidebar.appendChild(el('h3', null, 'Summary'));
+const summaryEl = el('span', 'summary-text', qualData.executive_summary || 'No summary available.');
+sidebar.appendChild(summaryEl);
+
+if (statsData) {
+  sidebar.appendChild(el('h3', null, 'Stats'));
+  [
+    ['Total People', statsData.total_people],
+    ['Org Depth', (statsData.org_depth || 0) + ' levels'],
+    ['Departments', Object.keys(statsData.departments || {}).length],
+  ].forEach(function(item) {
+    sidebar.appendChild(el('div', 'stat-item', '<span>' + item[0] + '</span><strong>' + item[1] + '</strong>'));
+  });
+}
+
+if (qualData.key_themes && qualData.key_themes.length) {
+  sidebar.appendChild(el('h3', null, 'Key Themes'));
+  const t = el('div');
+  qualData.key_themes.forEach(function(th) { t.appendChild(el('span', 'theme-tag', th)); });
+  sidebar.appendChild(t);
+}
+
+if (qualData.technology_signals && qualData.technology_signals.length) {
+  sidebar.appendChild(el('h3', null, 'Tech Signals'));
+  const t = el('div');
+  qualData.technology_signals.forEach(function(s) { t.appendChild(el('span', 'tech-tag', s)); });
+  sidebar.appendChild(t);
+}
+
+if (changesData && changesData.length) {
+  sidebar.appendChild(el('h3', null, 'Changes Since Last Run'));
+  changesData.forEach(function(c) {
+    const d = el('div', 'change-item ' + c.change_type);
+    if (c.change_type === 'new_hire') d.innerHTML = '&#x1F7E2; <strong>' + c.person_name + '</strong> joined as ' + c.to_value;
+    else if (c.change_type === 'promotion') d.innerHTML = '&#x1F7E1; <strong>' + c.person_name + '</strong>: ' + c.from_value + ' &#x2192; ' + c.to_value;
+    else d.innerHTML = '&#x1F534; <strong>' + c.person_name + '</strong> (' + c.from_value + ') departed';
+    sidebar.appendChild(d);
+  });
+}
+
+// D3 org chart
+const nodeMap = {};
+graphData.nodes.forEach(function(n) { nodeMap[n.linkedin_id] = Object.assign({}, n, {children: []}); });
+
+let root = null;
+graphData.nodes.forEach(function(n) {
+  if (n.reports_to && nodeMap[n.reports_to]) {
+    nodeMap[n.reports_to].children.push(nodeMap[n.linkedin_id]);
+  } else if (!n.reports_to) {
+    root = nodeMap[n.linkedin_id];
+  }
+});
+
+if (!root && graphData.nodes.length > 0) root = nodeMap[graphData.nodes[0].linkedin_id];
+
+if (!root) {
+  document.getElementById('chart-area').innerHTML = '<p style="padding:40px;color:#94a3b8">No org data to display.</p>';
+} else {
+  const chartArea = document.getElementById('chart-area');
+  const w = chartArea.clientWidth || 900;
+  const h = window.innerHeight - 80;
+  const svg = d3.select('#chart-area').append('svg').attr('width', w).attr('height', h);
+  const g = svg.append('g').attr('transform', 'translate(' + (w/2) + ',60)');
+  svg.call(d3.zoom().scaleExtent([0.3, 3]).on('zoom', function(e) { g.attr('transform', e.transform); }));
+
+  const hierarchy = d3.hierarchy(root);
+  const treeLayout = d3.tree().nodeSize([160, 110]);
+  treeLayout(hierarchy);
+
+  g.selectAll('.link').data(hierarchy.links()).enter().append('path').attr('class','link')
+    .attr('d', d3.linkVertical().x(function(d) { return d.x; }).y(function(d) { return d.y; }));
+
+  const node = g.selectAll('.node').data(hierarchy.descendants()).enter()
+    .append('g')
+    .attr('class', function(d) { return 'node confidence-' + (d.data.confidence || 'medium'); })
+    .attr('transform', function(d) { return 'translate(' + d.x + ',' + d.y + ')'; });
+
+  node.append('circle').attr('r', 28).attr('fill', '#1e293b');
+  node.append('text').attr('dy', 4).attr('text-anchor', 'middle')
+    .text(function(d) { return (d.data.name || '').split(' ')[0]; });
+  node.append('text').attr('class', 'dept-label').attr('dy', 42).attr('text-anchor', 'middle')
+    .text(function(d) { return (d.data.title || '').substring(0, 22); });
+
+  const tooltip = document.getElementById('tooltip');
+  node.on('mouseover', function(e, d) {
+    tooltip.style.opacity = '1';
+    tooltip.style.left = (e.pageX + 12) + 'px';
+    tooltip.style.top = (e.pageY - 20) + 'px';
+    tooltip.innerHTML = '<strong>' + d.data.name + '</strong><br>' + d.data.title +
+      '<br><span style="color:#94a3b8">' + (d.data.department || '') + '</span>' +
+      '<br><span style="font-size:10px">Confidence: ' + (d.data.confidence || 'unknown') + '</span>';
+  }).on('mouseout', function() { tooltip.style.opacity = '0'; });
+}
+</script>
+</body>
+</html>
