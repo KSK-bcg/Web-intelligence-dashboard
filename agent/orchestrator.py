@@ -15,9 +15,14 @@ import anthropic
 
 from agent.crawlers.linkedin import LinkedInCrawler
 from agent.crawlers.blog import BlogCrawler
+from agent.crawlers.filings import FilingsCrawler
+from agent.crawlers.earnings import EarningsCrawler
 from agent.analyzers.quant import QuantAgent
 from agent.analyzers.qual import QualAgent
 from agent.analyzers.viz import VizAgent
+from agent.analyzers.financial import FinancialAgent
+from agent.analyzers.synthesis import SynthesisAgent
+from agent.analyzers.pptx_agent import PPTXAgent
 from agent.normalizer import Normalizer
 from agent.store import Store
 
@@ -35,11 +40,21 @@ Return ONLY valid JSON (no markdown, no explanation):
   "company_name": "Company Name",
   "department_filter": "IT",
   "url": null,
-  "max_profiles": 30
+  "max_profiles": 30,
+  "companies": [],
+  "sector": null,
+  "region": null
 }}
 
-If the goal is about a blog or website, set source_type to "blog" and url to the URL.
-If it is about LinkedIn org structure, set source_type to "linkedin".
+Rules:
+- If the goal is about a blog or website: source_type="blog", url=the URL
+- If the goal is about LinkedIn org structure: source_type="linkedin"
+- If the goal is about financial filings/P&L for a company: source_type="financial", companies=list of company names
+- If the goal is about market landscape or industry intelligence: source_type="market_intel", companies=main companies mentioned
+- If the goal is about competitive analysis across companies: source_type="synthesis", companies=list of company names
+- If the goal asks for a board deck, presentation, or slide deck: source_type="board_deck", companies=list of company names
+
+For board_deck, market_intel, financial, synthesis goals: populate "sector" (e.g. "health IT") and "region" (e.g. "APAC") if mentioned.
 """
 
 
@@ -70,60 +85,106 @@ class Orchestrator:
             run_id = self.store.create_run(goal=goal, target=target)
 
         try:
+            source_type = plan.get("source_type", "linkedin")
+
             # Step 1: Crawl
             raw_data = await self._crawl(plan)
 
-            # Step 2: Normalize
-            people = self.normalizer.normalize(raw_data)
-            for person in people:
-                self.store.save_person(run_id=run_id, person={
-                    k: person.get(k) for k in
-                    ["linkedin_id", "name", "title", "department", "confidence"]
-                    if person.get(k)
-                })
+            # Step 2: Route to pipeline based on goal type
+            if source_type in ("board_deck", "market_intel", "synthesis", "financial"):
+                pipeline_result = await self._run_board_deck_pipeline(plan, raw_data, run_id)
+                self.store.complete_run(run_id)
 
-            # Step 3: Analyze
-            quant_result = await QuantAgent().run(people=people)
-            qual_result = await QualAgent().run(people=people)
+                # Build report path for HTML (use report_path if viz generates one, else None)
+                report_path = None
+                pptx_path = pipeline_result.get("pptx_path")
+                logger.info("Pipeline complete. PPTX: %s", pptx_path)
 
-            # Step 4: Change detection
-            prior_run = self.store.get_latest_run_for_target(target, exclude_run_id=run_id)
-            changes_dicts: List[dict] = []
-            if prior_run:
-                changes = self.store.diff_runs(prior_run_id=prior_run.id, current_run_id=run_id)
-                changes_dicts = [
-                    {
-                        "change_type": c.change_type,
-                        "person_name": c.person_name,
-                        "from_value": c.from_value,
-                        "to_value": c.to_value,
-                    }
-                    for c in changes
-                ]
+                return {
+                    "run_id": run_id,
+                    "report_path": report_path,
+                    "pptx_path": pptx_path,
+                    "changes": [],
+                    "people_count": 0,
+                    "synthesis": pipeline_result.get("synthesis"),
+                }
+            else:
+                # Original LinkedIn/blog pipeline
+                people = self.normalizer.normalize(raw_data)
+                for person in people:
+                    self.store.save_person(run_id=run_id, person={
+                        k: person.get(k) for k in
+                        ["linkedin_id", "name", "title", "department", "confidence"]
+                        if person.get(k)
+                    })
 
-            # Step 5: Render
-            viz = VizAgent()
-            html = viz.render(
-                graph=quant_result["graph"],
-                qual=qual_result,
-                stats=quant_result["stats"],
-                run_id=run_id,
-                changes=changes_dicts,
-            )
-            report_path = viz.save(html, run_id=run_id, output_dir=self.output_dir)
+                quant_result = await QuantAgent().run(people=people)
+                qual_result = await QualAgent().run(people=people)
 
-            self.store.complete_run(run_id)
-            logger.info("Pipeline complete. Report: %s", report_path)
+                # Step 4: Change detection
+                prior_run = self.store.get_latest_run_for_target(target, exclude_run_id=run_id)
+                changes_dicts: List[dict] = []
+                if prior_run:
+                    changes = self.store.diff_runs(prior_run_id=prior_run.id, current_run_id=run_id)
+                    changes_dicts = [
+                        {
+                            "change_type": c.change_type,
+                            "person_name": c.person_name,
+                            "from_value": c.from_value,
+                            "to_value": c.to_value,
+                        }
+                        for c in changes
+                    ]
 
-            return {
-                "run_id": run_id,
-                "report_path": report_path,
-                "changes": changes_dicts,
-                "people_count": len(people),
-            }
+                viz = VizAgent()
+                html = viz.render(
+                    graph=quant_result["graph"],
+                    qual=qual_result,
+                    stats=quant_result["stats"],
+                    run_id=run_id,
+                    changes=changes_dicts,
+                )
+                report_path = viz.save(html, run_id=run_id, output_dir=self.output_dir)
+
+                self.store.complete_run(run_id)
+                logger.info("Pipeline complete. Report: %s", report_path)
+
+                return {
+                    "run_id": run_id,
+                    "report_path": report_path,
+                    "pptx_path": None,
+                    "changes": changes_dicts,
+                    "people_count": len(people),
+                }
         except Exception:
             self.store.fail_run(run_id)
             raise
+
+    async def _run_board_deck_pipeline(self, plan: dict, raw_data: list, run_id: str) -> dict:
+        """Run full board deck pipeline: qual + financial + synthesis + pptx."""
+        qual_result = await QualAgent().run(people=[])
+
+        # Financial extraction — only if filing items present
+        filing_items = [d for d in raw_data if d.get("source") == "filing"]
+        if filing_items:
+            financial_results = await FinancialAgent().run(raw_data)
+            for fr in financial_results:
+                self.store.save_financial(run_id=run_id, financial=fr)
+        else:
+            financial_results = []
+
+        synthesis = await SynthesisAgent().run(
+            raw_data=raw_data,
+            financial=financial_results,
+            qual=qual_result,
+        )
+
+        pptx_path = await PPTXAgent().render(synthesis, run_id)
+        return {
+            "synthesis": synthesis,
+            "pptx_path": pptx_path,
+            "financial_results": financial_results,
+        }
 
     def _classify_goal(self, goal: str) -> dict:
         prompt = CLASSIFY_PROMPT.format(goal=goal)
@@ -157,6 +218,31 @@ class Orchestrator:
                 company_name=plan.get("company_name", ""),
                 department_filter=plan.get("department_filter"),
             )
+        elif source_type == "blog":
+            crawler = BlogCrawler()
+            return await crawler.run(url=plan.get("url", ""), max_pages=20)
+        elif source_type == "financial":
+            companies = plan.get("companies") or [plan.get("company_name", "")]
+            return await FilingsCrawler().run(companies=companies)
+        elif source_type in ("market_intel", "synthesis", "board_deck"):
+            companies = plan.get("companies") or []
+            target_query = plan.get("target") or plan.get("sector") or ""
+            filings = []
+            if companies:
+                try:
+                    filings = await FilingsCrawler().run(companies=companies)
+                except Exception as e:
+                    logger.warning("FilingsCrawler failed: %s", e)
+            try:
+                earnings = await EarningsCrawler().run(
+                    query=target_query,
+                    companies=companies,
+                    max_results=10,
+                )
+            except Exception as e:
+                logger.warning("EarningsCrawler failed: %s", e)
+                earnings = []
+            return filings + earnings
         else:
             crawler = BlogCrawler()
             return await crawler.run(url=plan.get("url", ""), max_pages=20)
