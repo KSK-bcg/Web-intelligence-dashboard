@@ -27,9 +27,18 @@ export interface RunResult {
   }>;
 }
 
+async function apiError(res: Response, fallback: string): Promise<never> {
+  try {
+    const body = await res.json();
+    throw new Error(body.detail ?? fallback);
+  } catch {
+    throw new Error(fallback);
+  }
+}
+
 export async function listRuns(): Promise<Run[]> {
   const res = await fetch(`${API_BASE}/runs`, { headers });
-  if (!res.ok) throw new Error(`Failed to fetch runs: ${res.status}`);
+  if (!res.ok) await apiError(res, `Failed to fetch runs: ${res.status}`);
   return res.json();
 }
 
@@ -39,7 +48,7 @@ export async function startRun(goal: string, runId?: string): Promise<RunResult>
     headers,
     body: JSON.stringify({ goal, run_id: runId }),
   });
-  if (!res.ok) throw new Error(`Failed to start run: ${res.status}`);
+  if (!res.ok) await apiError(res, `Run failed: ${res.status}`);
   return res.json();
 }
 

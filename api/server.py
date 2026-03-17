@@ -12,13 +12,14 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent.orchestrator import Orchestrator
 from agent.store import Store
+from agent.exceptions import WebIntelligenceError
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,18 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(WebIntelligenceError)
+async def intelligence_error_handler(request: Request, exc: WebIntelligenceError):
+    logger.error("WebIntelligenceError: %s", exc)
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(Exception)
+async def generic_error_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error: %s", exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 def verify_api_key(x_api_key: str = Header(...)):
