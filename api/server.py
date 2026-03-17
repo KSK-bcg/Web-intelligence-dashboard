@@ -73,6 +73,8 @@ async def start_run(req: RunRequest, _: str = Depends(verify_api_key)):
     """
     orch = Orchestrator()
     result = await orch.run(goal=req.goal, run_id_hint=req.run_id)
+    run_id = result.get("run_id", "")
+    result["pptx_available"] = Path(f"output/{run_id}/board-deck.pptx").exists()
     return result
 
 
@@ -88,6 +90,7 @@ def list_runs(_: str = Depends(verify_api_key)):
             "target": r.target,
             "status": r.status,
             "created_at": str(r.created_at),
+            "pptx_available": Path(f"output/{r.id}/board-deck.pptx").exists(),
         }
         for r in runs
     ]
@@ -109,3 +112,15 @@ def get_report(run_id: str, _: None = Depends(verify_api_key_query)):
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Report not found: {run_id}")
     return FileResponse(path, media_type="text/html")
+
+
+@app.get("/report/{run_id}/deck")
+def get_deck(run_id: str, _: None = Depends(verify_api_key_query)):
+    path = Path(f"output/{run_id}/board-deck.pptx")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Deck not found for run: {run_id}")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        filename=f"board-deck-{run_id}.pptx",
+    )

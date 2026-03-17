@@ -1,7 +1,7 @@
 // frontend/src/app/page.tsx
 "use client";
 import { useState, useEffect } from "react";
-import { listRuns, startRun, getReportUrl, Run } from "@/lib/api";
+import { listRuns, startRun, getReportUrl, getDeckUrl, Run } from "@/lib/api";
 
 export default function Home() {
   const [runs, setRuns] = useState<Run[]>([]);
@@ -22,6 +22,9 @@ export default function Home() {
     try {
       const result = await startRun(goal);
       window.open(getReportUrl(result.run_id), "_blank");
+      if (result.pptx_available || result.pptx_path) {
+        window.open(getDeckUrl(result.run_id), "_blank");
+      }
       const updated = await listRuns();
       setRuns(updated);
       setGoal("");
@@ -107,14 +110,25 @@ export default function Home() {
                   </p>
                 </div>
                 {run.status === "complete" && (
-                  <a
-                    href={getReportUrl(run.id)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-blue-400 hover:text-blue-300 ml-4 shrink-0"
-                  >
-                    Open Report →
-                  </a>
+                  <div className="flex items-center gap-2 ml-4 shrink-0">
+                    <a
+                      href={getReportUrl(run.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                    >
+                      Open Report →
+                    </a>
+                    {run.pptx_available && (
+                      <a
+                        href={getDeckUrl(run.id)}
+                        className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-500"
+                        download
+                      >
+                        ↓ Deck
+                      </a>
+                    )}
+                  </div>
                 )}
               </div>
             ))}

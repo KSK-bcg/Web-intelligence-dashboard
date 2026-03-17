@@ -13,11 +13,14 @@ export interface Run {
   target: string;
   status: string;
   created_at: string;
+  pptx_available?: boolean;
 }
 
 export interface RunResult {
   run_id: string;
   report_path: string;
+  pptx_path?: string | null;
+  pptx_available?: boolean;
   people_count: number;
   changes: Array<{
     change_type: string;
@@ -56,4 +59,8 @@ export async function startRun(goal: string, runId?: string): Promise<RunResult>
 
 export function getReportUrl(runId: string): string {
   return `${API_BASE}/report/${runId}?x-api-key=${API_KEY}`;
+}
+
+export function getDeckUrl(runId: string): string {
+  return `${API_BASE}/report/${runId}/deck?x-api-key=${API_KEY}`;
 }
