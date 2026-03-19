@@ -150,14 +150,14 @@ class PPTXAgent:
             )
             y = _CONTENT_START_Y
             if satisfied:
-                deck.add_label(slide, "GOALS MET", _CONTENT_X, y, fill_color="197A56")
+                deck.add_label(slide, "GOALS MET", _CONTENT_X, y, _CONTENT_W, fill_color="197A56")
                 deck.add_bullets(
                     slide, [f"✓ {g}" for g in satisfied[:4]],
                     _CONTENT_X, y + 0.42, _CONTENT_W, 1.5,
                 )
             if gaps:
                 y2 = _CONTENT_START_Y + 2.1
-                deck.add_label(slide, "GAPS / EXPAND RESEARCH", _CONTENT_X, y2, fill_color="D64454")
+                deck.add_label(slide, "GAPS / EXPAND RESEARCH", _CONTENT_X, y2, _CONTENT_W, fill_color="D64454")
                 deck.add_bullets(
                     slide, [f"✗ {g}" for g in gaps[:4]],
                     _CONTENT_X, y2 + 0.42, _CONTENT_W, 1.5,
@@ -226,13 +226,13 @@ class PPTXAgent:
             source=f"Source: Public filings, earnings transcripts · {date_label}",
         )
         y = _CONTENT_START_Y
-        deck.add_label(slide, "MARKET OVERVIEW", _CONTENT_X, y)
+        deck.add_label(slide, "MARKET OVERVIEW", _CONTENT_X, y, _CONTENT_W)
         y += 0.42
         deck.add_bullets(slide, [f"• {size_growth}"], _CONTENT_X, y, _CONTENT_W, 0.7)
         y += 0.8
 
         if players:
-            deck.add_label(slide, "KEY PLAYERS", _CONTENT_X, y)
+            deck.add_label(slide, "KEY PLAYERS", _CONTENT_X, y, _CONTENT_W)
             y += 0.42
             table_data = [["Company", "Market Position", "Key Signal"]]
             for p in players[:6]:
@@ -245,7 +245,7 @@ class PPTXAgent:
             y += 0.45 * (len(players[:6]) + 1) + 0.2
 
         if trends and y < 5.8:
-            deck.add_label(slide, "MARKET TRENDS", _CONTENT_X, y)
+            deck.add_label(slide, "MARKET TRENDS", _CONTENT_X, y, _CONTENT_W)
             y += 0.42
             deck.add_bullets(
                 slide,
@@ -276,7 +276,7 @@ class PPTXAgent:
         y = _CONTENT_START_Y
 
         if comp_table:
-            deck.add_label(slide, "COMPETITIVE COMPARISON", _CONTENT_X, y)
+            deck.add_label(slide, "COMPETITIVE COMPARISON", _CONTENT_X, y, _CONTENT_W)
             y += 0.42
             table_data = [["Dimension", "Findings"]]
             for row in comp_table[:6]:
@@ -288,7 +288,7 @@ class PPTXAgent:
             y += 0.8
 
         if winners and y < 5.5:
-            deck.add_label(slide, "WINNER SIGNALS", _CONTENT_X, y)
+            deck.add_label(slide, "WINNER SIGNALS", _CONTENT_X, y, _CONTENT_W * 0.5)
             y += 0.42
             deck.add_bullets(
                 slide, [f"✓ {w}" for w in winners[:3]],
@@ -296,7 +296,7 @@ class PPTXAgent:
             )
 
         if disruptions and y < 5.5:
-            deck.add_label(slide, "DISRUPTION RISKS", _CONTENT_X + _CONTENT_W * 0.5 + 0.1, y)
+            deck.add_label(slide, "DISRUPTION RISKS", _CONTENT_X + _CONTENT_W * 0.5 + 0.1, y, _CONTENT_W * 0.5 - 0.1)
             deck.add_bullets(
                 slide, [f"⚠ {d}" for d in disruptions[:3]],
                 _CONTENT_X + _CONTENT_W * 0.5 + 0.1, y + 0.42,
@@ -326,7 +326,7 @@ class PPTXAgent:
         col_w = (_CONTENT_W - 0.2) / 2
 
         if opps:
-            deck.add_label(slide, "OPPORTUNITIES", _CONTENT_X, y, fill_color="197A56")
+            deck.add_label(slide, "OPPORTUNITIES", _CONTENT_X, y, col_w, fill_color="197A56")
             deck.add_bullets(
                 slide, [f"+ {o}" for o in opps[:4]],
                 _CONTENT_X, y + 0.42, col_w, 2.2,
@@ -334,7 +334,7 @@ class PPTXAgent:
 
         if risks:
             x2 = _CONTENT_X + col_w + 0.2
-            deck.add_label(slide, "RISKS", x2, y, fill_color="D64454")
+            deck.add_label(slide, "RISKS", x2, y, col_w, fill_color="D64454")
             deck.add_bullets(
                 slide, [f"- {r}" for r in risks[:4]],
                 x2, y + 0.42, col_w, 2.2,
@@ -342,7 +342,7 @@ class PPTXAgent:
 
         if watch:
             y2 = _CONTENT_START_Y + 2.8
-            deck.add_label(slide, "WATCH LIST", _CONTENT_X, y2)
+            deck.add_label(slide, "WATCH LIST", _CONTENT_X, y2, _CONTENT_W)
             deck.add_bullets(
                 slide, [f"◉ {w}" for w in watch[:4]],
                 _CONTENT_X, y2 + 0.42, _CONTENT_W, 1.2,
@@ -363,14 +363,14 @@ class PPTXAgent:
         )
         y = _CONTENT_START_Y
         if recs:
-            deck.add_label(slide, "RECOMMENDATIONS", _CONTENT_X, y)
+            deck.add_label(slide, "RECOMMENDATIONS", _CONTENT_X, y, _CONTENT_W)
             y += 0.42
             for i, r in enumerate(recs[:5], 1):
                 deck.add_number_badge(slide, i, _CONTENT_X, y)
                 deck.add_textbox(slide, r, _CONTENT_X + 0.5, y + 0.02, _CONTENT_W - 0.5, 0.36, sz=13)
                 y += 0.46
         y += 0.2
-        deck.add_label(slide, "OUTLOOK", _CONTENT_X, y)
+        deck.add_label(slide, "OUTLOOK", _CONTENT_X, y, _CONTENT_W)
         deck.add_textbox(slide, outlook, _CONTENT_X, y + 0.42, _CONTENT_W, 1.0, sz=13, color="575757")
 
     @staticmethod
