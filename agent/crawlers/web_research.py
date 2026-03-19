@@ -31,9 +31,17 @@ import json
 import logging
 import os
 import re
+import re as _re
 from typing import Any, Dict, List, Optional
 
 import anthropic
+import httpx
+
+try:
+    import fitz
+    _FITZ_AVAILABLE = True
+except ImportError:
+    _FITZ_AVAILABLE = False
 
 from agent.base_agent import BaseAgent
 from agent.exceptions import WebIntelligenceError
@@ -77,6 +85,28 @@ For each question, return your final answer in this JSON array:
 Search thoroughly before answering. Do not guess. If information is unavailable, state that clearly."""
 
 
+def _is_pdf_url(url: str) -> bool:
+    """Return True if the URL appears to point to a PDF document."""
+    return bool(_re.search(r'\.pdf(\?|$)', url, _re.IGNORECASE) or '/pdf/' in url.lower())
+
+
+async def _jina_fetch(url: str) -> Optional[str]:
+    """Fetch a URL via Jina AI Reader for richer extraction."""
+    try:
+        jina_url = f"https://r.jina.ai/{url}"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                jina_url,
+                headers={"Accept": "text/plain", "X-No-Cache": "true"},
+                follow_redirects=True,
+            )
+        if resp.status_code == 200 and resp.text:
+            return resp.text[:8000]
+    except Exception as e:
+        logger.debug("Jina fallback failed for %s: %s", url, e)
+    return None
+
+
 class WebResearchAgent(BaseAgent):
     """
     Autonomous Claude agent with web_search_20250305 tool + Firecrawl URL enrichment.
@@ -113,6 +143,22 @@ class WebResearchAgent(BaseAgent):
             logger.warning("WebResearchAgent: firecrawl package not installed — Firecrawl enrichment disabled")
             return None
 
+    def _scrape_pdf(self, url: str) -> Optional[str]:
+        """Download and extract text from a PDF URL using pymupdf."""
+        try:
+            import httpx as _httpx
+            resp = _httpx.get(url, timeout=30, follow_redirects=True)
+            resp.raise_for_status()
+            doc = fitz.open(stream=resp.content, filetype="pdf")
+            pages = []
+            for page in doc[:20]:  # first 20 pages max
+                pages.append(page.get_text())
+            doc.close()
+            return "\n".join(pages)[:8000]
+        except Exception as e:
+            logger.debug("WebResearchAgent: PDF scrape failed for %s: %s", url, e)
+            return None
+
     async def run(
         self,
         topic: str,
@@ -146,6 +192,9 @@ class WebResearchAgent(BaseAgent):
         max_searches: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Stage 1: Claude agentic loop using web_search_20250305."""
+        # Sanitize topic to prevent prompt injection
+        topic = topic[:300].replace("{", "(").replace("}", ")")
+
         cap = max_searches or self.max_searches
         questions_text = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
         user_message = _RESEARCH_PROMPT.format(topic=topic, questions=questions_text)
@@ -259,16 +308,40 @@ class WebResearchAgent(BaseAgent):
         scraped: Dict[str, str] = {}  # url → markdown
 
         async def scrape_one(url: str) -> None:
+            # PDF: use pymupdf directly
+            if _FITZ_AVAILABLE and _is_pdf_url(url):
+                text = await loop.run_in_executor(None, lambda: self._scrape_pdf(url))
+                if text:
+                    scraped[url] = text
+                    return
+
+            # HTML: use Firecrawl
             try:
                 result = await loop.run_in_executor(None, lambda: fc.scrape(url))
+                content = None
                 if hasattr(result, "markdown") and result.markdown:
-                    scraped[url] = result.markdown[:8000]  # cap to 8k chars
+                    content = result.markdown[:8000]
                 elif isinstance(result, dict) and result.get("markdown"):
-                    scraped[url] = result["markdown"][:8000]
-                else:
-                    logger.debug("WebResearchAgent: Firecrawl returned no markdown for %s", url)
+                    content = result["markdown"][:8000]
+
+                if content:
+                    scraped[url] = content
+                    return
+
+                # Jina fallback for empty Firecrawl result
+                logger.debug("WebResearchAgent: Firecrawl returned empty for %s, trying Jina fallback", url)
+                jina_content = await _jina_fetch(url)
+                if jina_content:
+                    scraped[url] = jina_content
             except Exception as e:
                 logger.debug("WebResearchAgent: Firecrawl scrape failed for %s: %s", url, e)
+                # Try Jina as fallback on Firecrawl error too
+                try:
+                    jina_content = await _jina_fetch(url)
+                    if jina_content:
+                        scraped[url] = jina_content
+                except Exception:
+                    pass
 
         await asyncio.gather(*[scrape_one(u) for u in urls_to_scrape])
         logger.info("WebResearchAgent: Firecrawl scraped %d/%d URLs", len(scraped), len(urls_to_scrape))

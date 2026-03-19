@@ -16,18 +16,24 @@ export interface Run {
   pptx_available?: boolean;
 }
 
+export interface RunQueued {
+  run_id: string;
+  status: "queued";
+}
+
 export interface RunResult {
   run_id: string;
-  report_path: string;
+  report_path?: string | null;
   pptx_path?: string | null;
   pptx_available?: boolean;
-  people_count: number;
-  changes: Array<{
-    change_type: string;
-    person_name: string;
-    from_value?: string;
-    to_value?: string;
-  }>;
+  people_count?: number;
+  goal_evaluation?: { score: number; verdict: string } | null;
+}
+
+export interface ProgressEvent {
+  type: "progress" | "done" | "error";
+  message: string;
+  result?: RunResult;
 }
 
 async function apiError(res: Response, fallback: string): Promise<never> {
@@ -42,25 +48,99 @@ async function apiError(res: Response, fallback: string): Promise<never> {
 }
 
 export async function listRuns(): Promise<Run[]> {
-  const res = await fetch(`${API_BASE}/runs`, { headers });
+  const res = await fetch(`${API_BASE}/runs`, {
+    headers,
+    signal: AbortSignal.timeout(10000),
+  });
   if (!res.ok) await apiError(res, `Failed to fetch runs: ${res.status}`);
   return res.json();
 }
 
-export async function startRun(goal: string, runId?: string): Promise<RunResult> {
+/** POST /run — returns immediately with run_id. Pipeline runs in background. */
+export async function startRun(goal: string, runId?: string): Promise<RunQueued> {
   const res = await fetch(`${API_BASE}/run`, {
     method: "POST",
     headers,
     body: JSON.stringify({ goal, run_id: runId }),
+    signal: AbortSignal.timeout(15000),
   });
   if (!res.ok) await apiError(res, `Run failed: ${res.status}`);
   return res.json();
+}
+
+/** POST /revise — returns immediately with run_id. Revision runs in background. */
+export async function startRevision(runId: string, revisionNotes: string): Promise<RunQueued> {
+  const res = await fetch(`${API_BASE}/revise`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ run_id: runId, revision_notes: revisionNotes }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) await apiError(res, `Revise failed: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Subscribe to SSE progress stream for a run.
+ * Calls onProgress for each event, onDone on completion, onError on failure.
+ * Returns a cleanup function to close the stream.
+ */
+export function subscribeToRun(
+  runId: string,
+  callbacks: {
+    onProgress: (message: string) => void;
+    onDone: (result: RunResult) => void;
+    onError: (message: string) => void;
+  }
+): () => void {
+  const streamUrl = `${API_BASE}/run/${runId}/stream?api_key=${encodeURIComponent(API_KEY)}`;
+  const es = new EventSource(streamUrl);
+
+  es.onmessage = (event) => {
+    try {
+      const data: ProgressEvent = JSON.parse(event.data);
+      if (data.type === "progress") {
+        callbacks.onProgress(data.message);
+      } else if (data.type === "done") {
+        es.close();
+        callbacks.onDone(data.result || { run_id: runId });
+      } else if (data.type === "error") {
+        es.close();
+        callbacks.onError(data.message);
+      }
+    } catch {
+      // ignore malformed events
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    callbacks.onError("Lost connection to research stream — check server logs");
+  };
+
+  return () => es.close();
+}
+
+/** Download the PPTX deck via fetch (header auth) and trigger browser download. */
+export async function downloadDeck(runId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/report/${runId}/deck`, { headers });
+  if (!res.ok) await apiError(res, `Deck not available: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `research-deck-${runId}.pptx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 export function getReportUrl(runId: string): string {
   return `${API_BASE}/report/${runId}?x-api-key=${API_KEY}`;
 }
 
+// Keep for backward compat but prefer downloadDeck()
 export function getDeckUrl(runId: string): string {
   return `${API_BASE}/report/${runId}/deck?x-api-key=${API_KEY}`;
 }
@@ -75,6 +155,7 @@ export async function clarifyGoal(goal: string): Promise<ClarifyResult> {
     method: "POST",
     headers,
     body: JSON.stringify({ goal }),
+    signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) await apiError(res, `Clarify failed: ${res.status}`);
   return res.json();
@@ -88,21 +169,9 @@ export async function refineGoal(
     method: "POST",
     headers,
     body: JSON.stringify({ goal, answers }),
+    signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) await apiError(res, `Refine failed: ${res.status}`);
   const data = await res.json();
   return data.refined_goal;
-}
-
-export async function reviseRun(
-  runId: string,
-  revisionNotes: string
-): Promise<RunResult> {
-  const res = await fetch(`${API_BASE}/revise`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ run_id: runId, revision_notes: revisionNotes }),
-  });
-  if (!res.ok) await apiError(res, `Revise failed: ${res.status}`);
-  return res.json();
 }

@@ -22,6 +22,7 @@ from agent.crawlers.blog import BlogCrawler
 from agent.crawlers.filings import FilingsCrawler
 from agent.crawlers.earnings import EarningsCrawler
 from agent.crawlers.web_research import WebResearchAgent
+from agent.knowledge_graph import KnowledgeGraph
 from agent.analyzers.quant import QuantAgent
 from agent.analyzers.qual import QualAgent
 from agent.analyzers.viz import VizAgent
@@ -31,6 +32,7 @@ from agent.analyzers.pptx_agent import PPTXAgent
 from agent.analyzers.goal_evaluator import GoalEvaluator
 from agent.normalizer import Normalizer
 from agent.store import Store
+from agent.exceptions import WebIntelligenceError
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +87,7 @@ class Orchestrator:
         self.normalizer = Normalizer()
         self.output_dir = output_dir
 
-    async def run(self, goal: str, run_id_hint: Optional[str] = None) -> dict:
+    async def run(self, goal: str, run_id_hint: Optional[str] = None, progress_callback=None) -> dict:
         """Execute the full pipeline for a goal."""
         logger.info("Starting pipeline for goal: %s", goal)
         plan = self._classify_goal(goal)
@@ -106,7 +108,12 @@ class Orchestrator:
             source_types = plan.get("source_types") or ["linkedin"]
 
             # Step 1: Fan-out crawl in parallel across all source types
-            raw_data = await self._crawl(plan)
+            try:
+                raw_data = await asyncio.wait_for(self._crawl(plan), timeout=300.0)
+            except asyncio.TimeoutError:
+                logger.error("Orchestrator: crawl timed out after 300s")
+                self.store.fail_run(run_id)
+                raise WebIntelligenceError("Research timed out after 5 minutes — try a more specific goal")
 
             # Step 2: Route to pipeline
             use_board_deck = bool(BOARD_DECK_TYPES.intersection(set(source_types)))
@@ -114,7 +121,8 @@ class Orchestrator:
 
             if use_board_deck:
                 pipeline_result = await self._run_board_deck_pipeline(
-                    plan, raw_data, run_id, include_people=has_people_source
+                    plan, raw_data, run_id, include_people=has_people_source,
+                    progress_callback=progress_callback,
                 )
                 self.store.complete_run(run_id)
                 pptx_path = pipeline_result.get("pptx_path")
@@ -184,7 +192,9 @@ class Orchestrator:
             raise
 
     async def _run_board_deck_pipeline(
-        self, plan: dict, raw_data: list, run_id: str, include_people: bool = False
+        self, plan: dict, raw_data: list, run_id: str,
+        include_people: bool = False,
+        progress_callback=None,
     ) -> dict:
         """Run full board deck pipeline: qual + financial + synthesis + pptx."""
         people_data = [d for d in raw_data if "name" in d] if include_people else []
@@ -198,14 +208,31 @@ class Orchestrator:
         else:
             financial_results = []
 
+        original_goal = plan.get("_original_goal", "")
+        target = plan.get("target") or "unknown"
+
+        # P6: Load prior knowledge from past runs on same target
+        prior_knowledge_context = ""
+        try:
+            prior_entities = self.store.get_prior_knowledge(target)
+            if prior_entities:
+                prior_knowledge_context = KnowledgeGraph().build_prior_knowledge_context(prior_entities)
+                logger.info("Orchestrator: loaded %d prior entities for target '%s'", len(prior_entities), target)
+        except Exception as kg_err:
+            logger.debug("Orchestrator: prior knowledge load failed (non-fatal): %s", kg_err)
+
+        if progress_callback:
+            await progress_callback({"type": "progress", "message": "🧠 Synthesizing findings into competitive intelligence..."})
+
         synthesis = await SynthesisAgent().run(
             raw_data=raw_data,
             financial=financial_results,
             qual=qual_result,
+            goal=original_goal,
+            prior_knowledge=prior_knowledge_context,
         )
-
-        # Goal evaluation — verify output covers the original ask
-        original_goal = plan.get("_original_goal") or ""
+        # Store original goal on synthesis so PPTXAgent/NarrativePlanner can access it
+        synthesis["_original_goal"] = original_goal
         if original_goal:
             try:
                 evaluation = GoalEvaluator().evaluate(original_goal, synthesis)
@@ -217,6 +244,73 @@ class Orchestrator:
             except Exception as eval_err:
                 logger.warning("GoalEvaluator skipped: %s", eval_err)
 
+        # Iterative re-research: if quality gate fails, fill gaps automatically
+        evaluation = synthesis.get("goal_evaluation", {})
+        if evaluation.get("verdict") in ("PARTIAL", "FAIL"):
+            gaps = (evaluation.get("goal_coverage") or {}).get("gaps") or []
+            if gaps and progress_callback:
+                await progress_callback({"type": "progress", "message": f"Quality gate: {evaluation['verdict']} ({evaluation.get('score', 0)}/100) — re-researching {len(gaps[:4])} gaps..."})
+            if gaps:
+                logger.info("Orchestrator: GoalEval %s — running iterative re-research on %d gaps",
+                           evaluation.get("verdict"), len(gaps[:4]))
+                gap_questions = []
+                for gap in gaps[:4]:
+                    # Clean up the gap description to form a research question
+                    q = gap.split("—")[0].strip()
+                    if q:
+                        gap_questions.append(q)
+
+                if gap_questions:
+                    try:
+                        additional_findings = await WebResearchAgent().run(
+                            topic=original_goal,
+                            questions=gap_questions,
+                        )
+                        # Convert to raw_data format and merge
+                        additional_raw = []
+                        for f in additional_findings:
+                            parts = [f["answer"]]
+                            for e in f.get("evidence", []):
+                                parts.append(f"Evidence: {e}")
+                            for url, md in (f.get("scraped_content") or {}).items():
+                                parts.append(f"\n--- Full page from {url} ---\n{md}\n---")
+                            for s in f.get("sources", []):
+                                parts.append(f"Source: {s}")
+                            additional_raw.append({
+                                "source": "web_research_gap_fill",
+                                "title": f["question"],
+                                "raw_text": "\n\n".join(parts),
+                            })
+
+                        if additional_raw:
+                            # Re-synthesize with enriched data
+                            enriched_raw_data = raw_data + additional_raw
+                            synthesis = await SynthesisAgent().run(
+                                raw_data=enriched_raw_data,
+                                financial=financial_results,
+                                qual=qual_result,
+                                goal=original_goal,
+                            )
+                            # Re-evaluate
+                            evaluation2 = GoalEvaluator().evaluate(original_goal, synthesis)
+                            synthesis["goal_evaluation"] = evaluation2
+                            logger.info("Orchestrator: re-research complete — new score=%s verdict=%s",
+                                       evaluation2.get("score"), evaluation2.get("verdict"))
+                    except Exception as re_err:
+                        logger.warning("Orchestrator: iterative re-research failed: %s", re_err)
+
+        # P6: Extract entities from final synthesis and persist for future runs
+        try:
+            entities = KnowledgeGraph().extract_entities(target=target, synthesis=synthesis)
+            if entities:
+                self.store.save_entities(run_id=run_id, target=target, entities=entities)
+                logger.info("Orchestrator: saved %d entities for target '%s'", len(entities), target)
+        except Exception as kg_err:
+            logger.debug("Orchestrator: entity extraction failed (non-fatal): %s", kg_err)
+
+        if progress_callback:
+            await progress_callback({"type": "progress", "message": "📊 Generating BCG deck..."})
+
         pptx_path = await PPTXAgent().render(synthesis, run_id)
         return {
             "synthesis": synthesis,
@@ -226,10 +320,11 @@ class Orchestrator:
         }
 
     def _classify_goal(self, goal: str) -> dict:
-        prompt = CLASSIFY_PROMPT.format(goal=goal)
+        safe_goal = goal[:500].replace("{", "(").replace("}", ")")
+        prompt = CLASSIFY_PROMPT.format(goal=safe_goal)
         try:
             response = self.client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}],
             )

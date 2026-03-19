@@ -1,15 +1,18 @@
 // frontend/src/app/page.tsx
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   listRuns,
   startRun,
+  startRevision,
   clarifyGoal,
   refineGoal,
-  reviseRun,
+  subscribeToRun,
+  downloadDeck,
   getReportUrl,
   getDeckUrl,
   Run,
+  RunResult,
   ClarifyResult,
 } from "@/lib/api";
 
@@ -110,6 +113,9 @@ export default function Home() {
   const [reviseTarget, setReviseTarget] = useState<string | null>(null);
   const [revisionNotes, setRevisionNotes] = useState("");
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
+  const [progressLog, setProgressLog] = useState<string[]>([]);
+  const [lastResult, setLastResult] = useState<RunResult | null>(null);
+  const streamCleanupRef = useRef<(() => void) | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -120,6 +126,8 @@ export default function Home() {
         setError("Backend offline — run: uvicorn api.server:app --host 127.0.0.1 --port 8000")
       )
       .finally(() => setIsLoadingRuns(false));
+    // Cleanup any active SSE stream on unmount
+    return () => { streamCleanupRef.current?.(); };
   }, []);
 
   async function handleSubmitGoal() {
@@ -152,38 +160,65 @@ export default function Home() {
     }
   }
 
-  async function executeRun(finalGoal: string) {
+  const executeRun = useCallback(async (finalGoal: string) => {
     setPhase("running");
+    setProgressLog(["🚀 Starting research pipeline..."]);
+    setLastResult(null);
+    setError(null);
+
     try {
-      const result = await startRun(finalGoal);
-      if (result.pptx_available || result.pptx_path) {
-        window.open(getDeckUrl(result.run_id), "_blank");
-      } else if (result.report_path) {
-        window.open(getReportUrl(result.run_id), "_blank");
-      }
-      const updated = await listRuns();
-      setRuns(updated);
+      const { run_id } = await startRun(finalGoal);
+
+      const cleanup = subscribeToRun(run_id, {
+        onProgress: (msg) => setProgressLog((prev) => [...prev, msg]),
+        onDone: async (result) => {
+          setLastResult(result);
+          setPhase("done");
+          const updated = await listRuns();
+          setRuns(updated);
+        },
+        onError: (msg) => {
+          setError(msg);
+          setPhase("done");
+          listRuns().then(setRuns).catch(() => {});
+        },
+      });
+      streamCleanupRef.current = cleanup;
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Run failed");
-    } finally {
+      setError(e instanceof Error ? e.message : "Run failed to start");
       setPhase("done");
     }
-  }
+  }, []);
 
   async function handleRevise(runId: string) {
     if (!revisionNotes.trim()) return;
     setError(null);
+    setProgressLog(["🔄 Starting revision..."]);
+    setPhase("running");
+
     try {
-      const result = await reviseRun(runId, revisionNotes);
-      if (result.pptx_available || result.pptx_path) {
-        window.open(getDeckUrl(result.run_id), "_blank");
-      }
-      const updated = await listRuns();
-      setRuns(updated);
-      setReviseTarget(null);
-      setRevisionNotes("");
+      const { run_id } = await startRevision(runId, revisionNotes);
+
+      const cleanup = subscribeToRun(run_id, {
+        onProgress: (msg) => setProgressLog((prev) => [...prev, msg]),
+        onDone: async (result) => {
+          setLastResult(result);
+          setPhase("done");
+          setReviseTarget(null);
+          setRevisionNotes("");
+          const updated = await listRuns();
+          setRuns(updated);
+        },
+        onError: (msg) => {
+          setError(msg);
+          setPhase("done");
+          listRuns().then(setRuns).catch(() => {});
+        },
+      });
+      streamCleanupRef.current = cleanup;
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Revision failed");
+      setError(e instanceof Error ? e.message : "Revision failed to start");
+      setPhase("done");
     }
   }
 
@@ -616,7 +651,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* ── Running — source stream indicators ── */}
+        {/* ── Running — live progress terminal ── */}
         {phase === "running" && (
           <div
             className="animate-fade-slide"
@@ -624,47 +659,56 @@ export default function Home() {
               background: "var(--bg-surface)",
               border: "1px solid var(--border)",
               borderRadius: "12px",
-              padding: "24px",
               marginBottom: "24px",
+              overflow: "hidden",
             }}
           >
+            {/* Terminal header bar */}
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: "10px",
-                marginBottom: "20px",
+                justifyContent: "space-between",
+                padding: "10px 16px",
+                background: "var(--bg-elevated)",
+                borderBottom: "1px solid var(--border)",
               }}
             >
-              <div
-                style={{
-                  width: "8px",
-                  height: "8px",
-                  borderRadius: "50%",
-                  background: "#E8A045",
-                  boxShadow: "0 0 8px #E8A045",
-                  animation: "pulse-dot 0.9s ease-in-out infinite",
-                  flexShrink: 0,
-                }}
-              />
-              <span
-                style={{
-                  fontSize: "13px",
-                  color: "var(--text-primary)",
-                  fontFamily: "var(--font-geist-mono)",
-                }}
-              >
-                Crawling all sources in parallel…
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <div style={{ display: "flex", gap: "5px" }}>
+                  <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#E85454", opacity: 0.7 }} />
+                  <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#E8A045", opacity: 0.7 }} />
+                  <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#00C896", opacity: 0.7 }} />
+                </div>
+                <span style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-geist-mono)", letterSpacing: "0.08em" }}>
+                  RESEARCH PIPELINE
+                </span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <div
+                  style={{
+                    width: "6px",
+                    height: "6px",
+                    borderRadius: "50%",
+                    background: "#E8A045",
+                    boxShadow: "0 0 6px #E8A045",
+                    animation: "pulse-dot 0.9s ease-in-out infinite",
+                  }}
+                />
+                <span style={{ fontSize: "9px", color: "#E8A045", fontFamily: "var(--font-geist-mono)", letterSpacing: "0.1em" }}>
+                  RUNNING
+                </span>
+              </div>
             </div>
 
-            {/* Source stream badges */}
+            {/* Source badges row */}
             <div
               style={{
                 display: "flex",
-                gap: "10px",
+                gap: "8px",
                 flexWrap: "wrap",
-                marginBottom: "18px",
+                padding: "12px 16px",
+                borderBottom: "1px solid var(--border)",
               }}
             >
               {SOURCE_INDICATORS.map((src, i) => (
@@ -673,70 +717,77 @@ export default function Home() {
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: "8px",
-                    padding: "9px 14px",
+                    gap: "6px",
+                    padding: "5px 10px",
                     background: `rgba(${src.color === "#4A9EE8" ? "74,158,232" : src.color === "#E8A045" ? "232,160,69" : "0,200,150"}, 0.07)`,
-                    border: `1px solid ${src.color}35`,
-                    borderRadius: "8px",
-                    animation: `fadeSlideIn 0.4s ease ${i * 0.12}s both`,
+                    border: `1px solid ${src.color}30`,
+                    borderRadius: "6px",
+                    animation: `fadeSlideIn 0.4s ease ${i * 0.1}s both`,
                   }}
                 >
                   <div
                     style={{
-                      width: "6px",
-                      height: "6px",
+                      width: "5px",
+                      height: "5px",
                       borderRadius: "50%",
                       background: src.color,
-                      boxShadow: `0 0 8px ${src.glowColor}`,
+                      boxShadow: `0 0 6px ${src.glowColor}`,
                       animation: `pulse-dot 1.4s ease-in-out ${i * 0.35}s infinite`,
                       flexShrink: 0,
                     }}
                   />
-                  <span
-                    style={{
-                      fontSize: "11px",
-                      color: src.color,
-                      fontFamily: "var(--font-geist-mono)",
-                      letterSpacing: "0.04em",
-                    }}
-                  >
+                  <span style={{ fontSize: "10px", color: src.color, fontFamily: "var(--font-geist-mono)", letterSpacing: "0.05em" }}>
                     {src.label}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: "9px",
-                      color: `${src.color}70`,
-                      fontFamily: "var(--font-geist-mono)",
-                      letterSpacing: "0.08em",
-                    }}
-                  >
-                    ACTIVE
                   </span>
                 </div>
               ))}
             </div>
 
+            {/* Live progress log */}
             <div
               style={{
-                padding: "10px 14px",
-                background: "var(--bg-elevated)",
-                borderRadius: "6px",
-                borderLeft: "2px solid var(--border-bright)",
+                padding: "12px 16px",
+                maxHeight: "220px",
+                overflowY: "auto",
+                display: "flex",
+                flexDirection: "column",
+                gap: "4px",
               }}
             >
-              <p
-                style={{
-                  fontSize: "11px",
-                  color: "var(--text-dim)",
-                  fontFamily: "var(--font-geist-mono)",
-                  margin: 0,
-                  lineHeight: 1.6,
-                }}
-              >
-                LinkedIn crawls may take 2–5 min.
-                <br />
-                The deck will open automatically when ready.
-              </p>
+              {progressLog.map((msg, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    gap: "8px",
+                    alignItems: "flex-start",
+                    animation: "fadeSlideIn 0.25s ease both",
+                  }}
+                >
+                  <span style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-geist-mono)", flexShrink: 0, paddingTop: "1px" }}>
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                  <span style={{ fontSize: "12px", color: i === progressLog.length - 1 ? "var(--text-primary)" : "var(--text-secondary)", fontFamily: "var(--font-geist-mono)", lineHeight: 1.5 }}>
+                    {msg}
+                  </span>
+                </div>
+              ))}
+              {/* blinking cursor */}
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <span style={{ fontSize: "10px", color: "var(--text-dim)", fontFamily: "var(--font-geist-mono)", flexShrink: 0 }}>
+                  {String(progressLog.length + 1).padStart(2, "0")}
+                </span>
+                <span
+                  style={{
+                    display: "inline-block",
+                    width: "6px",
+                    height: "13px",
+                    background: "#E8A045",
+                    animation: "pulse-dot 1s ease-in-out infinite",
+                    borderRadius: "1px",
+                  }}
+                />
+              </div>
             </div>
           </div>
         )}
@@ -1137,6 +1188,118 @@ export default function Home() {
         </div>
 
         {/* New research CTA */}
+        {phase === "done" && lastResult && (
+          <div
+            className="animate-fade-slide"
+            style={{
+              background: "var(--bg-surface)",
+              border: "1px solid rgba(0,200,150,0.2)",
+              borderRadius: "12px",
+              padding: "20px",
+              marginTop: "20px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "16px" }}>
+              <div
+                style={{
+                  width: "6px",
+                  height: "6px",
+                  borderRadius: "50%",
+                  background: "#00C896",
+                  boxShadow: "0 0 8px rgba(0,200,150,0.6)",
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: "11px", color: "#00C896", fontFamily: "var(--font-geist-mono)", letterSpacing: "0.1em", fontWeight: 700 }}>
+                RESEARCH COMPLETE
+              </span>
+              {lastResult.goal_evaluation && (
+                <span
+                  style={{
+                    marginLeft: "auto",
+                    fontSize: "10px",
+                    fontFamily: "var(--font-geist-mono)",
+                    letterSpacing: "0.08em",
+                    padding: "3px 8px",
+                    borderRadius: "4px",
+                    fontWeight: 700,
+                    color: lastResult.goal_evaluation.verdict === "PASS" ? "#00C896" : lastResult.goal_evaluation.verdict === "PARTIAL" ? "#E8A045" : "#E85454",
+                    background: lastResult.goal_evaluation.verdict === "PASS" ? "rgba(0,200,150,0.08)" : lastResult.goal_evaluation.verdict === "PARTIAL" ? "rgba(232,160,69,0.08)" : "rgba(232,84,84,0.08)",
+                    border: `1px solid ${lastResult.goal_evaluation.verdict === "PASS" ? "rgba(0,200,150,0.25)" : lastResult.goal_evaluation.verdict === "PARTIAL" ? "rgba(232,160,69,0.25)" : "rgba(232,84,84,0.25)"}`,
+                  }}
+                >
+                  BCG SCORE {lastResult.goal_evaluation.score}/100 · {lastResult.goal_evaluation.verdict}
+                </span>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <a
+                href={getReportUrl(lastResult.run_id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "9px 16px",
+                  background: "var(--bg-elevated)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  color: "var(--text-primary)",
+                  fontFamily: "var(--font-geist-mono)",
+                  textDecoration: "none",
+                  letterSpacing: "0.04em",
+                  transition: "border-color 0.15s, background 0.15s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = "rgba(232,160,69,0.4)";
+                  e.currentTarget.style.background = "rgba(232,160,69,0.06)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = "var(--border)";
+                  e.currentTarget.style.background = "var(--bg-elevated)";
+                }}
+              >
+                <span style={{ fontSize: "13px" }}>📄</span> View Report
+              </a>
+
+              {lastResult.pptx_available && (
+                <button
+                  onClick={() => downloadDeck(lastResult.run_id)}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "9px 16px",
+                    background: "#E8A045",
+                    border: "none",
+                    borderRadius: "8px",
+                    fontSize: "11px",
+                    color: "#070B12",
+                    fontFamily: "var(--font-geist-mono)",
+                    letterSpacing: "0.04em",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    transition: "opacity 0.15s, transform 0.15s",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.opacity = "0.9";
+                    e.currentTarget.style.transform = "translateY(-1px)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.opacity = "1";
+                    e.currentTarget.style.transform = "translateY(0)";
+                  }}
+                >
+                  <span style={{ fontSize: "13px" }}>⬇</span> Download Deck
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {phase === "done" && (
           <button
             onClick={reset}

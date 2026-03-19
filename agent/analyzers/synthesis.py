@@ -10,6 +10,9 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+_CONTENT_BUDGET_PER_ITEM = 4000   # chars per source item
+_CONTENT_BUDGET_TOTAL = 80000     # total chars for all raw content
+
 _EMPTY_SYNTHESIS: Dict[str, Any] = {
     "executive_summary": "",
     "market_landscape": {
@@ -32,9 +35,10 @@ _EMPTY_SYNTHESIS: Dict[str, Any] = {
 }
 
 _PROMPT_TEMPLATE = """
-You are a senior strategy consultant producing a competitive intelligence briefing.
+You are a senior strategy consultant at a top-tier firm producing a competitive intelligence briefing.
+{goal_context}
 
-Below is research data collected from public sources. Analyze it and produce a structured synthesis.
+Below is research data collected from primary and secondary sources. Analyze it and produce a structured synthesis.
 
 ## Research Data
 
@@ -98,14 +102,18 @@ class SynthesisAgent:
         raw_data: List[Dict[str, Any]],
         financial: Optional[List[Dict[str, Any]]] = None,
         qual: Optional[Dict[str, Any]] = None,
+        goal: str = "",
+        prior_knowledge: str = "",
     ) -> Dict[str, Any]:
         """
         Synthesize all collected data into a competitive narrative.
 
         Args:
-            raw_data: List of crawler items (filings + earnings + blog items)
-            financial: List of FinancialAgent results (trusted, already extracted)
-            qual: QualAgent result dict (trusted, already extracted)
+            raw_data:         List of crawler items (filings + earnings + blog items)
+            financial:        List of FinancialAgent results (trusted, already extracted)
+            qual:             QualAgent result dict (trusted, already extracted)
+            goal:             Optional research goal to tailor synthesis
+            prior_knowledge:  Prior entity context from KnowledgeGraph (trusted)
 
         Returns:
             Synthesis dict matching _EMPTY_SYNTHESIS schema.
@@ -115,7 +123,10 @@ class SynthesisAgent:
             return dict(_EMPTY_SYNTHESIS)
 
         try:
-            return await self._synthesize(raw_data, financial or [], qual or {})
+            return await self._synthesize(
+                raw_data, financial or [], qual or {},
+                goal_context=goal, prior_knowledge=prior_knowledge,
+            )
         except Exception as e:
             logger.warning("SynthesisAgent error, returning empty synthesis: %s", e)
             return dict(_EMPTY_SYNTHESIS)
@@ -125,18 +136,51 @@ class SynthesisAgent:
         raw_data: List[Dict[str, Any]],
         financial: List[Dict[str, Any]],
         qual: Dict[str, Any],
+        goal_context: str = "",
+        prior_knowledge: str = "",
     ) -> Dict[str, Any]:
+        # Build goal context string for prompt
+        goal_context_str = (
+            f"\nResearch goal: {goal_context[:300]}\nTailor your synthesis specifically to this goal."
+            if goal_context
+            else ""
+        )
+
         # Build untrusted content block — wrap all raw text in safety tags
+        # Apply per-item budget cap (_CONTENT_BUDGET_PER_ITEM chars each)
         untrusted_parts: List[str] = []
         for item in raw_data:
             raw_text = item.get("raw_text") or item.get("body") or ""
             if raw_text:
                 title = item.get("title") or item.get("company") or item.get("source_url", "")
                 untrusted_parts.append(
-                    f"<content source='untrusted' title='{title}'>\n{raw_text[:5000]}\n</content>"
+                    f"<content source='untrusted' title='{title}'>\n{raw_text[:_CONTENT_BUDGET_PER_ITEM]}\n</content>"
                 )
 
+        # Apply total content budget — truncate list if total chars exceed budget
+        total = len(untrusted_parts)
+        if total > 0:
+            kept = 0
+            running_total = 0
+            trimmed_parts: List[str] = []
+            for part in untrusted_parts:
+                if running_total + len(part) > _CONTENT_BUDGET_TOTAL:
+                    break
+                trimmed_parts.append(part)
+                running_total += len(part)
+                kept += 1
+            if kept < total:
+                logger.warning(
+                    "SynthesisAgent: truncated content to %d/%d items (budget %d chars)",
+                    kept, total, _CONTENT_BUDGET_TOTAL,
+                )
+            untrusted_parts = trimmed_parts
+
         untrusted_content = "\n\n".join(untrusted_parts) if untrusted_parts else "No raw research data available."
+
+        # Prior knowledge — trusted (from KnowledgeGraph, established in prior runs)
+        if prior_knowledge:
+            untrusted_content = prior_knowledge + untrusted_content
 
         # Financial summary — trusted (pre-extracted by FinancialAgent)
         if financial:
@@ -151,14 +195,15 @@ class SynthesisAgent:
             qual_summary = "No qualitative analysis available."
 
         prompt = _PROMPT_TEMPLATE.format(
+            goal_context=goal_context_str,
             untrusted_content=untrusted_content,
             financial_summary=financial_summary,
             qual_summary=qual_summary,
         )
 
         response = self._client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=4000,
+            model="claude-opus-4-6",
+            max_tokens=6000,
             messages=[{"role": "user", "content": prompt}],
         )
 

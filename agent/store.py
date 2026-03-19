@@ -53,6 +53,20 @@ class FinancialRecord(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class EntityRecord(SQLModel, table=True):
+    """Named entity extracted from research runs — builds a cross-run knowledge graph."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    target: str = Field(index=True)           # company/topic slug this entity belongs to
+    entity_type: str                           # company | person | product | metric | trend
+    name: str
+    description: str = ""
+    value: Optional[str] = None               # for metrics: "14% CAGR", for people: "CTO"
+    source_run_id: str                         # which run surfaced this
+    confidence: str = "medium"                # high | medium | low
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Store:
     def __init__(self, db_path: str = "intelligence.db"):
         self.engine = create_engine(f"sqlite:///{db_path}")
@@ -186,3 +200,55 @@ class Store:
                 ))
 
         return changes
+
+    def save_entities(self, run_id: str, target: str, entities: list[dict]) -> None:
+        """Upsert extracted entities for a target. Deduplicates by (target, entity_type, name)."""
+        with Session(self.engine) as session:
+            for ent in entities:
+                # Check for existing entity with same target + type + name
+                existing = session.exec(
+                    select(EntityRecord).where(
+                        EntityRecord.target == target,
+                        EntityRecord.entity_type == ent.get("entity_type", ""),
+                        EntityRecord.name == ent.get("name", ""),
+                    )
+                ).first()
+                if existing:
+                    existing.description = ent.get("description", existing.description)
+                    existing.value = ent.get("value", existing.value)
+                    existing.source_run_id = run_id
+                    existing.confidence = ent.get("confidence", existing.confidence)
+                    existing.updated_at = datetime.utcnow()
+                    session.add(existing)
+                else:
+                    session.add(EntityRecord(
+                        target=target,
+                        entity_type=ent.get("entity_type", "general"),
+                        name=ent.get("name", ""),
+                        description=ent.get("description", ""),
+                        value=ent.get("value"),
+                        source_run_id=run_id,
+                        confidence=ent.get("confidence", "medium"),
+                    ))
+            session.commit()
+
+    def get_prior_knowledge(self, target: str, limit: int = 50) -> list[dict]:
+        """Retrieve prior entities for a target to pre-load into synthesis context."""
+        with Session(self.engine) as session:
+            entities = session.exec(
+                select(EntityRecord)
+                .where(EntityRecord.target == target)
+                .order_by(EntityRecord.updated_at.desc())
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "entity_type": e.entity_type,
+                    "name": e.name,
+                    "description": e.description,
+                    "value": e.value,
+                    "confidence": e.confidence,
+                    "from_run": e.source_run_id,
+                }
+                for e in entities
+            ]

@@ -26,6 +26,7 @@ except ImportError as _bcg_err:
     _BCG_IMPORT_ERROR = str(_bcg_err)
 
 from agent.exceptions import PPTXRenderError
+from agent.analyzers.narrative_planner import NarrativePlanner, NarrativePlan
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,15 @@ _CONTENT_X = 0.69
 _CONTENT_W = 11.96
 _CONTENT_START_Y = 2.10
 _CONTENT_END_Y = 6.50
+
+# Maps narrative plan slide types to builder method names
+_SLIDE_BUILDERS = {
+    "executive_summary": "_add_executive_summary_slide",
+    "market_landscape": "_add_market_landscape_slide",
+    "competitive_matrix": "_add_competitive_matrix_slide",
+    "strategic_options": "_add_strategic_implications_slide",
+    "recommendations": "_add_recommendations_slide",
+}
 
 
 def build_output_path(company: str, topic: str, date_str: str, output_dir: str = "output") -> str:
@@ -85,172 +95,48 @@ class PPTXAgent:
         date_str = today.isoformat()
         date_label = today.strftime("%-d %B %Y")
 
+        # Plan the narrative (P7: dynamic deck)
+        original_goal = s.get("_original_goal") or s.get("topic") or topic
+        plan = NarrativePlanner().plan(goal=original_goal, synthesis=s)
+        logger.info("PPTXAgent: narrative thesis='%s'", plan.thesis[:80] if plan.thesis else "default")
+
         deck = BCGDeck()
 
         # ── Slide 1: Title ───────────────────────────────────────────────────
         deck.add_title_slide(
             title=f"{company} — {topic}",
-            subtitle="Competitive Intelligence Brief",
+            subtitle=plan.thesis or "Competitive Intelligence Brief",
             date=date_label,
         )
 
         # ── Section: Intelligence Summary ────────────────────────────────────
         deck.add_section_divider("Intelligence Summary")
 
-        # ── Slide 2: Executive Summary ───────────────────────────────────────
-        exec_summary = s.get("executive_summary") or _PLACEHOLDER
+        # ── Dynamic slides driven by narrative plan ──────────────────────────
         recs: List[str] = s.get("recommendations") or []
 
-        slide = deck.add_content_slide(
-            title=self._action_title(exec_summary),
-            source=f"Source: Web Intelligence Agent · Run {run_id} · {date_label}",
-        )
-        bullets = [f"• {exec_summary}"]
-        if recs:
-            bullets += ["", "Key Recommendations:"] + [f"  › {r}" for r in recs[:3]]
-        deck.add_bullets(slide, bullets, _CONTENT_X, _CONTENT_START_Y, _CONTENT_W, 3.8)
+        for slide_type in plan.slide_sequence:
+            builder_name = _SLIDE_BUILDERS.get(slide_type)
+            if not builder_name:
+                logger.debug("PPTXAgent: no builder for slide type '%s' — skipping", slide_type)
+                continue
+            builder = getattr(self, builder_name, None)
+            if not builder:
+                logger.debug("PPTXAgent: builder method '%s' not found — skipping", builder_name)
+                continue
 
-        # ── Slide 3: Market Landscape ────────────────────────────────────────
-        ml = s.get("market_landscape") or {}
-        size_growth = ml.get("size_and_growth") or _PLACEHOLDER
-        players: List[Dict[str, Any]] = ml.get("key_players") or []
-        trends: List[str] = ml.get("trends") or []
+            if slide_type == "executive_summary":
+                builder(deck, s, recs, run_id, date_label)
+            elif slide_type == "market_landscape":
+                builder(deck, s, company, date_label)
+            elif slide_type == "competitive_matrix":
+                builder(deck, s, company, date_label)
+            elif slide_type == "strategic_options":
+                builder(deck, s, date_label)
+            elif slide_type == "recommendations":
+                builder(deck, s, date_label)
 
-        slide = deck.add_content_slide(
-            title=self._action_title(size_growth),
-            source=f"Source: Public filings, earnings transcripts · {date_label}",
-        )
-        y = _CONTENT_START_Y
-        deck.add_label(slide, "MARKET OVERVIEW", _CONTENT_X, y)
-        y += 0.42
-        deck.add_bullets(slide, [f"• {size_growth}"], _CONTENT_X, y, _CONTENT_W, 0.7)
-        y += 0.8
-
-        if players:
-            deck.add_label(slide, "KEY PLAYERS", _CONTENT_X, y)
-            y += 0.42
-            table_data = [["Company", "Market Position", "Key Signal"]]
-            for p in players[:6]:
-                table_data.append([
-                    p.get("name", ""),
-                    p.get("position", ""),
-                    p.get("signal", ""),
-                ])
-            deck.add_table(slide, table_data, x=_CONTENT_X, y=y, w=_CONTENT_W)
-            y += 0.45 * (len(players[:6]) + 1) + 0.2
-
-        if trends and y < 5.8:
-            deck.add_label(slide, "MARKET TRENDS", _CONTENT_X, y)
-            y += 0.42
-            deck.add_bullets(
-                slide,
-                [f"→ {t}" for t in trends[:4]],
-                _CONTENT_X, y, _CONTENT_W, min(1.6, _CONTENT_END_Y - y),
-            )
-
-        # ── Slide 4: Competitive Analysis ────────────────────────────────────
-        ca = s.get("competitive_analysis") or {}
-        comp_table: List[Dict[str, Any]] = ca.get("comparison_table") or []
-        winners: List[str] = ca.get("winner_signals") or []
-        disruptions: List[str] = ca.get("disruption_risks") or []
-
-        ca_title = (
-            winners[0] if winners else
-            f"{company} competitive position reveals clear differentiation opportunities"
-        )
-        slide = deck.add_content_slide(
-            title=ca_title,
-            source=f"Source: Public disclosures, industry research · {date_label}",
-        )
-        y = _CONTENT_START_Y
-
-        if comp_table:
-            deck.add_label(slide, "COMPETITIVE COMPARISON", _CONTENT_X, y)
-            y += 0.42
-            table_data = [["Dimension", "Findings"]]
-            for row in comp_table[:6]:
-                table_data.append([row.get("dimension", ""), row.get("findings", "")])
-            deck.add_table(slide, table_data, x=_CONTENT_X, y=y, w=_CONTENT_W)
-            y += 0.45 * (len(comp_table[:6]) + 1) + 0.2
-        else:
-            deck.add_bullets(slide, [f"• {_PLACEHOLDER}"], _CONTENT_X, y, _CONTENT_W, 0.6)
-            y += 0.8
-
-        if winners and y < 5.5:
-            deck.add_label(slide, "WINNER SIGNALS", _CONTENT_X, y)
-            y += 0.42
-            deck.add_bullets(
-                slide, [f"✓ {w}" for w in winners[:3]],
-                _CONTENT_X, y, _CONTENT_W * 0.5, min(1.2, _CONTENT_END_Y - y),
-            )
-
-        if disruptions and y < 5.5:
-            deck.add_label(slide, "DISRUPTION RISKS", _CONTENT_X + _CONTENT_W * 0.5 + 0.1, y)
-            deck.add_bullets(
-                slide, [f"⚠ {d}" for d in disruptions[:3]],
-                _CONTENT_X + _CONTENT_W * 0.5 + 0.1, y + 0.42,
-                _CONTENT_W * 0.5 - 0.1, min(1.2, _CONTENT_END_Y - y),
-            )
-
-        # ── Slide 5: Strategic Implications ──────────────────────────────────
-        si = s.get("strategic_implications") or {}
-        opps: List[str] = si.get("opportunities") or []
-        risks: List[str] = si.get("risks") or []
-        watch: List[str] = si.get("watch_list") or []
-
-        si_title = (
-            opps[0] if opps else
-            f"Strategic response requires prioritising differentiated capabilities"
-        )
-        slide = deck.add_content_slide(
-            title=si_title,
-            source=f"Source: BCG analysis · {date_label}",
-        )
-        y = _CONTENT_START_Y
-        col_w = (_CONTENT_W - 0.2) / 2
-
-        if opps:
-            deck.add_label(slide, "OPPORTUNITIES", _CONTENT_X, y, fill_color="197A56")
-            deck.add_bullets(
-                slide, [f"+ {o}" for o in opps[:4]],
-                _CONTENT_X, y + 0.42, col_w, 2.2,
-            )
-
-        if risks:
-            x2 = _CONTENT_X + col_w + 0.2
-            deck.add_label(slide, "RISKS", x2, y, fill_color="D64454")
-            deck.add_bullets(
-                slide, [f"- {r}" for r in risks[:4]],
-                x2, y + 0.42, col_w, 2.2,
-            )
-
-        if watch:
-            y2 = _CONTENT_START_Y + 2.8
-            deck.add_label(slide, "WATCH LIST", _CONTENT_X, y2)
-            deck.add_bullets(
-                slide, [f"◉ {w}" for w in watch[:4]],
-                _CONTENT_X, y2 + 0.42, _CONTENT_W, 1.2,
-            )
-
-        # ── Slide 6: Recommendations & Outlook ───────────────────────────────
-        outlook = s.get("outlook") or _PLACEHOLDER
-        slide = deck.add_content_slide(
-            title=self._action_title(outlook),
-            source=f"Source: BCG analysis · {date_label}",
-        )
-        y = _CONTENT_START_Y
-        if recs:
-            deck.add_label(slide, "RECOMMENDATIONS", _CONTENT_X, y)
-            y += 0.42
-            for i, r in enumerate(recs[:5], 1):
-                deck.add_number_badge(slide, i, _CONTENT_X, y)
-                deck.add_textbox(slide, r, _CONTENT_X + 0.5, y + 0.02, _CONTENT_W - 0.5, 0.36, sz=13)
-                y += 0.46
-        y += 0.2
-        deck.add_label(slide, "OUTLOOK", _CONTENT_X, y)
-        deck.add_textbox(slide, outlook, _CONTENT_X, y + 0.42, _CONTENT_W, 1.0, sz=13, color="575757")
-
-        # ── Slide 7: Goal Coverage (if evaluation present) ────────────────────
+        # ── Goal Coverage slide (always appended if evaluation present) ───────
         goal_eval = s.get("goal_evaluation")
         if goal_eval:
             verdict = goal_eval.get("verdict", "UNKNOWN")
@@ -301,6 +187,191 @@ class PPTXAgent:
             logger.warning("PPTXAgent: bcg_qa check failed (non-fatal): %s", qa_err)
 
         return str(Path(out_path).resolve())
+
+    # ── Slide builder methods ────────────────────────────────────────────────
+
+    def _add_executive_summary_slide(
+        self,
+        deck: Any,
+        s: Dict[str, Any],
+        recs: List[str],
+        run_id: str,
+        date_label: str,
+    ) -> None:
+        exec_summary = s.get("executive_summary") or _PLACEHOLDER
+
+        slide = deck.add_content_slide(
+            title=self._action_title(exec_summary),
+            source=f"Source: Web Intelligence Agent · Run {run_id} · {date_label}",
+        )
+        bullets = [f"• {exec_summary}"]
+        if recs:
+            bullets += ["", "Key Recommendations:"] + [f"  › {r}" for r in recs[:3]]
+        deck.add_bullets(slide, bullets, _CONTENT_X, _CONTENT_START_Y, _CONTENT_W, 3.8)
+
+    def _add_market_landscape_slide(
+        self,
+        deck: Any,
+        s: Dict[str, Any],
+        company: str,
+        date_label: str,
+    ) -> None:
+        ml = s.get("market_landscape") or {}
+        size_growth = ml.get("size_and_growth") or _PLACEHOLDER
+        players: List[Dict[str, Any]] = ml.get("key_players") or []
+        trends: List[str] = ml.get("trends") or []
+
+        slide = deck.add_content_slide(
+            title=self._action_title(size_growth),
+            source=f"Source: Public filings, earnings transcripts · {date_label}",
+        )
+        y = _CONTENT_START_Y
+        deck.add_label(slide, "MARKET OVERVIEW", _CONTENT_X, y)
+        y += 0.42
+        deck.add_bullets(slide, [f"• {size_growth}"], _CONTENT_X, y, _CONTENT_W, 0.7)
+        y += 0.8
+
+        if players:
+            deck.add_label(slide, "KEY PLAYERS", _CONTENT_X, y)
+            y += 0.42
+            table_data = [["Company", "Market Position", "Key Signal"]]
+            for p in players[:6]:
+                table_data.append([
+                    p.get("name", ""),
+                    p.get("position", ""),
+                    p.get("signal", ""),
+                ])
+            deck.add_table(slide, table_data, x=_CONTENT_X, y=y, w=_CONTENT_W)
+            y += 0.45 * (len(players[:6]) + 1) + 0.2
+
+        if trends and y < 5.8:
+            deck.add_label(slide, "MARKET TRENDS", _CONTENT_X, y)
+            y += 0.42
+            deck.add_bullets(
+                slide,
+                [f"→ {t}" for t in trends[:4]],
+                _CONTENT_X, y, _CONTENT_W, min(1.6, _CONTENT_END_Y - y),
+            )
+
+    def _add_competitive_matrix_slide(
+        self,
+        deck: Any,
+        s: Dict[str, Any],
+        company: str,
+        date_label: str,
+    ) -> None:
+        ca = s.get("competitive_analysis") or {}
+        comp_table: List[Dict[str, Any]] = ca.get("comparison_table") or []
+        winners: List[str] = ca.get("winner_signals") or []
+        disruptions: List[str] = ca.get("disruption_risks") or []
+
+        ca_title = (
+            winners[0] if winners else
+            f"{company} competitive position reveals clear differentiation opportunities"
+        )
+        slide = deck.add_content_slide(
+            title=ca_title,
+            source=f"Source: Public disclosures, industry research · {date_label}",
+        )
+        y = _CONTENT_START_Y
+
+        if comp_table:
+            deck.add_label(slide, "COMPETITIVE COMPARISON", _CONTENT_X, y)
+            y += 0.42
+            table_data = [["Dimension", "Findings"]]
+            for row in comp_table[:6]:
+                table_data.append([row.get("dimension", ""), row.get("findings", "")])
+            deck.add_table(slide, table_data, x=_CONTENT_X, y=y, w=_CONTENT_W)
+            y += 0.45 * (len(comp_table[:6]) + 1) + 0.2
+        else:
+            deck.add_bullets(slide, [f"• {_PLACEHOLDER}"], _CONTENT_X, y, _CONTENT_W, 0.6)
+            y += 0.8
+
+        if winners and y < 5.5:
+            deck.add_label(slide, "WINNER SIGNALS", _CONTENT_X, y)
+            y += 0.42
+            deck.add_bullets(
+                slide, [f"✓ {w}" for w in winners[:3]],
+                _CONTENT_X, y, _CONTENT_W * 0.5, min(1.2, _CONTENT_END_Y - y),
+            )
+
+        if disruptions and y < 5.5:
+            deck.add_label(slide, "DISRUPTION RISKS", _CONTENT_X + _CONTENT_W * 0.5 + 0.1, y)
+            deck.add_bullets(
+                slide, [f"⚠ {d}" for d in disruptions[:3]],
+                _CONTENT_X + _CONTENT_W * 0.5 + 0.1, y + 0.42,
+                _CONTENT_W * 0.5 - 0.1, min(1.2, _CONTENT_END_Y - y),
+            )
+
+    def _add_strategic_implications_slide(
+        self,
+        deck: Any,
+        s: Dict[str, Any],
+        date_label: str,
+    ) -> None:
+        si = s.get("strategic_implications") or {}
+        opps: List[str] = si.get("opportunities") or []
+        risks: List[str] = si.get("risks") or []
+        watch: List[str] = si.get("watch_list") or []
+
+        si_title = (
+            opps[0] if opps else
+            f"Strategic response requires prioritising differentiated capabilities"
+        )
+        slide = deck.add_content_slide(
+            title=si_title,
+            source=f"Source: BCG analysis · {date_label}",
+        )
+        y = _CONTENT_START_Y
+        col_w = (_CONTENT_W - 0.2) / 2
+
+        if opps:
+            deck.add_label(slide, "OPPORTUNITIES", _CONTENT_X, y, fill_color="197A56")
+            deck.add_bullets(
+                slide, [f"+ {o}" for o in opps[:4]],
+                _CONTENT_X, y + 0.42, col_w, 2.2,
+            )
+
+        if risks:
+            x2 = _CONTENT_X + col_w + 0.2
+            deck.add_label(slide, "RISKS", x2, y, fill_color="D64454")
+            deck.add_bullets(
+                slide, [f"- {r}" for r in risks[:4]],
+                x2, y + 0.42, col_w, 2.2,
+            )
+
+        if watch:
+            y2 = _CONTENT_START_Y + 2.8
+            deck.add_label(slide, "WATCH LIST", _CONTENT_X, y2)
+            deck.add_bullets(
+                slide, [f"◉ {w}" for w in watch[:4]],
+                _CONTENT_X, y2 + 0.42, _CONTENT_W, 1.2,
+            )
+
+    def _add_recommendations_slide(
+        self,
+        deck: Any,
+        s: Dict[str, Any],
+        date_label: str,
+    ) -> None:
+        recs: List[str] = s.get("recommendations") or []
+        outlook = s.get("outlook") or _PLACEHOLDER
+
+        slide = deck.add_content_slide(
+            title=self._action_title(outlook),
+            source=f"Source: BCG analysis · {date_label}",
+        )
+        y = _CONTENT_START_Y
+        if recs:
+            deck.add_label(slide, "RECOMMENDATIONS", _CONTENT_X, y)
+            y += 0.42
+            for i, r in enumerate(recs[:5], 1):
+                deck.add_number_badge(slide, i, _CONTENT_X, y)
+                deck.add_textbox(slide, r, _CONTENT_X + 0.5, y + 0.02, _CONTENT_W - 0.5, 0.36, sz=13)
+                y += 0.46
+        y += 0.2
+        deck.add_label(slide, "OUTLOOK", _CONTENT_X, y)
+        deck.add_textbox(slide, outlook, _CONTENT_X, y + 0.42, _CONTENT_W, 1.0, sz=13, color="575757")
 
     @staticmethod
     def _action_title(text: str, max_len: int = 120) -> str:
