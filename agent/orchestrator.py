@@ -21,12 +21,14 @@ from agent.crawlers.linkedin import LinkedInCrawler
 from agent.crawlers.blog import BlogCrawler
 from agent.crawlers.filings import FilingsCrawler
 from agent.crawlers.earnings import EarningsCrawler
+from agent.crawlers.web_research import WebResearchAgent
 from agent.analyzers.quant import QuantAgent
 from agent.analyzers.qual import QualAgent
 from agent.analyzers.viz import VizAgent
 from agent.analyzers.financial import FinancialAgent
 from agent.analyzers.synthesis import SynthesisAgent
 from agent.analyzers.pptx_agent import PPTXAgent
+from agent.analyzers.goal_evaluator import GoalEvaluator
 from agent.normalizer import Normalizer
 from agent.store import Store
 
@@ -56,12 +58,23 @@ Rules for source_types (MUST be a JSON array — include ALL that apply):
 - Market landscape / industry intelligence → include "market_intel"
 - Competitive analysis across companies → include "synthesis"
 - Board deck / presentation explicitly requested → include "board_deck"
+- Open-ended research / intelligence with no specific structured source → include "web_research"
 - Multi-faceted goals (e.g. org chart + financials) → include ALL matching types
 
-For financial/market_intel/synthesis/board_deck: populate "sector" (e.g. "health IT") and "region" (e.g. "APAC") if mentioned.
+For financial/market_intel/synthesis/board_deck/web_research: populate "sector" (e.g. "health IT") and "region" (e.g. "APAC") if mentioned.
+For web_research goals: populate "research_questions" as a JSON array of 3-6 specific, MECE sub-questions
+that decompose the goal into answerable research questions. Example:
+  goal: "Analyze Roche's IT strategy and competitive position"
+  research_questions: [
+    "What is Roche's IT budget and spend as % of revenue?",
+    "Who are the key IT leaders at Roche and what are their priorities?",
+    "What technology platforms and vendors does Roche use?",
+    "How does Roche's digital/IT maturity compare to Novartis and J&J?",
+    "What major IT initiatives or transformation programs is Roche running?"
+  ]
 """
 
-BOARD_DECK_TYPES = {"board_deck", "market_intel", "synthesis", "financial"}
+BOARD_DECK_TYPES = {"board_deck", "market_intel", "synthesis", "financial", "web_research"}
 
 
 class Orchestrator:
@@ -76,6 +89,7 @@ class Orchestrator:
         """Execute the full pipeline for a goal."""
         logger.info("Starting pipeline for goal: %s", goal)
         plan = self._classify_goal(goal)
+        plan["_original_goal"] = goal  # preserved for GoalEvaluator
         logger.info("Classified: %s", plan)
 
         target = plan.get("target") or "unknown"
@@ -115,6 +129,7 @@ class Orchestrator:
                     "changes": [],
                     "people_count": len([d for d in raw_data if "name" in d]),
                     "synthesis": pipeline_result.get("synthesis"),
+                    "goal_evaluation": pipeline_result.get("goal_evaluation"),
                 }
             else:
                 # LinkedIn / blog pipeline → HTML org chart report
@@ -189,11 +204,25 @@ class Orchestrator:
             qual=qual_result,
         )
 
+        # Goal evaluation — verify output covers the original ask
+        original_goal = plan.get("_original_goal") or ""
+        if original_goal:
+            try:
+                evaluation = GoalEvaluator().evaluate(original_goal, synthesis)
+                synthesis["goal_evaluation"] = evaluation
+                logger.info(
+                    "GoalEvaluator: score=%s verdict=%s",
+                    evaluation.get("score"), evaluation.get("verdict"),
+                )
+            except Exception as eval_err:
+                logger.warning("GoalEvaluator skipped: %s", eval_err)
+
         pptx_path = await PPTXAgent().render(synthesis, run_id)
         return {
             "synthesis": synthesis,
             "pptx_path": pptx_path,
             "financial_results": financial_results,
+            "goal_evaluation": synthesis.get("goal_evaluation"),
         }
 
     def _classify_goal(self, goal: str) -> dict:
@@ -251,6 +280,36 @@ class Orchestrator:
         elif source_type == "financial":
             companies = plan.get("companies") or [plan.get("company_name", "")]
             return await FilingsCrawler().run(companies=companies)
+        elif source_type == "web_research":
+            topic = plan.get("company_name") or plan.get("target") or plan.get("sector") or "general research"
+            questions = plan.get("research_questions") or [
+                f"What are the key facts about {topic}?",
+                f"Who are the main players and decision-makers in {topic}?",
+                f"What are the major trends and challenges for {topic}?",
+                f"What is the competitive landscape for {topic}?",
+            ]
+            findings = await WebResearchAgent().run(topic=topic, questions=questions)
+            # Convert findings to the same raw_data schema used by other crawlers.
+            # raw_text combines Claude's answer, evidence bullets, and any Firecrawl
+            # scraped page content for maximum richness in SynthesisAgent.
+            items = []
+            for f in findings:
+                parts = [f["answer"]]
+                for e in f.get("evidence", []):
+                    parts.append(f"Evidence: {e}")
+                for url, markdown in (f.get("scraped_content") or {}).items():
+                    parts.append(f"\n--- Full page content from {url} ---\n{markdown}\n---")
+                for s in f.get("sources", []):
+                    parts.append(f"Source: {s}")
+                items.append({
+                    "source": "web_research",
+                    "title": f["question"],
+                    "raw_text": "\n\n".join(parts),
+                    "confidence": f.get("confidence", "medium"),
+                    "question": f["question"],
+                    "source_urls": f.get("sources", []),
+                })
+            return items
         elif source_type in ("market_intel", "synthesis", "board_deck"):
             companies = plan.get("companies") or []
             target_query = plan.get("target") or plan.get("sector") or ""

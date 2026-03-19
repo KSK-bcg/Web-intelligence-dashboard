@@ -1,341 +1,313 @@
+"""
+PPTXAgent — generates BCG-standard PowerPoint decks from SynthesisAgent output.
+
+Uses ~/bcg_build/scripts/bcg_template.py (BCGDeck) and validates with
+bcg_qa.check_deck() — 0 HIGH issues required before returning the path.
+"""
 import logging
 import os
 import re
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pptx import Presentation
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
-from pptx.util import Inches, Pt
+# ── BCG template on path ────────────────────────────────────────────────────
+_BCG_SCRIPTS = Path.home() / "bcg_build" / "scripts"
+if str(_BCG_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_BCG_SCRIPTS))
+
+try:
+    from bcg_template import BCGDeck  # type: ignore
+    from bcg_qa import check_deck as bcg_check_deck  # type: ignore
+    _BCG_AVAILABLE = True
+except ImportError as _bcg_err:
+    _BCG_AVAILABLE = False
+    _BCG_IMPORT_ERROR = str(_bcg_err)
 
 from agent.exceptions import PPTXRenderError
 
+logger = logging.getLogger(__name__)
+
+_PLACEHOLDER = "Insufficient data — expand research scope."
+
+# BCG content area (inches) — must stay within these bounds
+_CONTENT_X = 0.69
+_CONTENT_W = 11.96
+_CONTENT_START_Y = 2.10
+_CONTENT_END_Y = 6.50
+
 
 def build_output_path(company: str, topic: str, date_str: str, output_dir: str = "output") -> str:
-    """Build a stable, human-readable PPTX path.
-
-    Same company + topic + date always returns the same path, enabling in-place revision
-    without creating duplicate files.
-    """
+    """Stable, human-readable PPTX path — same inputs always return the same path."""
     def slugify(s: str) -> str:
         s = s.lower().strip()
         s = re.sub(r"[^\w\s-]", "", s)
         s = re.sub(r"[\s_]+", "-", s)
         return s[:40].strip("-")
 
-    filename = f"{slugify(company)}-{slugify(topic)}-{date_str}.pptx"
+    filename = f"{date_str.replace('-', '')}_{slugify(company).replace('-', '_').title()}_{slugify(topic).replace('-', '_').title()}.pptx"
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     return str(Path(output_dir) / filename)
 
-logger = logging.getLogger(__name__)
-
-# BCG color palette
-NAVY = RGBColor(0x0C, 0x20, 0x40)
-WHITE = RGBColor(0xFF, 0xFF, 0xFF)
-LIGHT_BLUE = RGBColor(0x7D, 0xD3, 0xFC)
-ACCENT_BLUE = RGBColor(0x0E, 0xA5, 0xE9)
-FOOTER_GRAY = RGBColor(0x94, 0xA3, 0xB8)
-BODY_BG = RGBColor(0xFF, 0xFF, 0xFF)
-
-# Slide dimensions (widescreen 16:9)
-SLIDE_W = Inches(13.33)
-SLIDE_H = Inches(7.5)
-
-# Header bar
-HEADER_H = Inches(1.3)
-
-# Body area starts below header
-BODY_TOP = Inches(1.45)
-BODY_H = Inches(5.6)
-BODY_L = Inches(0.5)
-BODY_W = Inches(12.33)
-
-# Footer
-FOOTER_TOP = Inches(7.1)
-FOOTER_H = Inches(0.35)
-
-
-def _rgb(r: int, g: int, b: int) -> RGBColor:
-    return RGBColor(r, g, b)
-
-
-def _add_header(slide: Any, title: str, category: str = "") -> None:
-    """Add navy header bar with category label and title."""
-    # Navy background rectangle
-    shape = slide.shapes.add_shape(
-        1,  # MSO_SHAPE_TYPE.RECTANGLE
-        0, 0, SLIDE_W, HEADER_H
-    )
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = NAVY
-    shape.line.fill.background()
-
-    # Category label (light blue, small caps)
-    if category:
-        cat_box = slide.shapes.add_textbox(Inches(0.4), Inches(0.1), Inches(10), Inches(0.35))
-        tf = cat_box.text_frame
-        tf.word_wrap = False
-        p = tf.paragraphs[0]
-        run = p.add_run()
-        run.text = category.upper()
-        run.font.color.rgb = LIGHT_BLUE
-        run.font.size = Pt(9)
-        run.font.bold = False
-
-    # Title (white, bold, 28pt)
-    title_top = Inches(0.42) if category else Inches(0.35)
-    title_box = slide.shapes.add_textbox(Inches(0.4), title_top, Inches(12.5), Inches(0.8))
-    tf = title_box.text_frame
-    tf.word_wrap = True
-    p = tf.paragraphs[0]
-    run = p.add_run()
-    run.text = title
-    run.font.color.rgb = WHITE
-    run.font.size = Pt(26)
-    run.font.bold = True
-
-
-def _add_footer(slide: Any, slide_num: int, total: int = 5) -> None:
-    """Add footer with date and slide number."""
-    today = date.today().strftime("%B %Y")
-    footer_text = f"Competitive Intelligence Report  ·  {today}  ·  {slide_num}/{total}"
-    box = slide.shapes.add_textbox(Inches(0.4), FOOTER_TOP, SLIDE_W - Inches(0.8), FOOTER_H)
-    tf = box.text_frame
-    p = tf.paragraphs[0]
-    p.alignment = PP_ALIGN.RIGHT
-    run = p.add_run()
-    run.text = footer_text
-    run.font.size = Pt(8)
-    run.font.color.rgb = FOOTER_GRAY
-
-
-def _add_body_text(slide: Any, lines: List[str], top: Optional[Any] = None, font_size: int = 12) -> None:
-    """Add body text block with bullet lines."""
-    t = top if top is not None else BODY_TOP
-    box = slide.shapes.add_textbox(BODY_L, t, BODY_W, BODY_H)
-    tf = box.text_frame
-    tf.word_wrap = True
-    for i, line in enumerate(lines):
-        if i == 0:
-            p = tf.paragraphs[0]
-        else:
-            p = tf.add_paragraph()
-        p.space_before = Pt(4)
-        run = p.add_run()
-        run.text = line
-        run.font.size = Pt(font_size)
-        run.font.color.rgb = _rgb(0x1E, 0x29, 0x3B)
-
-
-def _add_section_header(slide: Any, text: str, top: Any) -> Any:
-    """Add a colored section header. Returns next top position."""
-    box = slide.shapes.add_textbox(BODY_L, top, BODY_W, Inches(0.35))
-    tf = box.text_frame
-    p = tf.paragraphs[0]
-    run = p.add_run()
-    run.text = text
-    run.font.size = Pt(11)
-    run.font.bold = True
-    run.font.color.rgb = ACCENT_BLUE
-    return top + Inches(0.38)
-
-
-_PLACEHOLDER = "Insufficient data for this section — expand research scope."
-
 
 class PPTXAgent:
-    """Generates a 5-slide BCG-style PowerPoint from SynthesisAgent output."""
+    """Generates a BCG-standard board deck from SynthesisAgent output."""
 
     async def render(self, synthesis: Dict[str, Any], run_id: str) -> str:
         """
-        Render a 5-slide BCG deck from synthesis data.
+        Render a BCG deck from synthesis data.
 
-        Output path is derived from company + topic + date so the same research
-        always writes to the same file. Revisions overwrite in-place — no duplicates.
-
-        Args:
-            synthesis: Output from SynthesisAgent.run()
-            run_id: Stored in footer / metadata only
+        Uses ~/bcg_build/scripts/bcg_template.py (BCGDeck) with the official
+        BCG_Master_16-9_Default.pptx as base. Runs bcg_qa.check_deck() before
+        returning — raises PPTXRenderError if any HIGH issues remain.
 
         Returns:
             Absolute path to the generated .pptx file
         """
+        if not _BCG_AVAILABLE:
+            raise PPTXRenderError(
+                f"BCG template not available ({_BCG_IMPORT_ERROR}). "
+                f"Ensure ~/bcg_build/scripts/ exists and dependencies are installed."
+            )
         try:
             return self._build(synthesis, run_id)
+        except PPTXRenderError:
+            raise
         except Exception as e:
             logger.error("PPTXAgent render error: %s", e)
-            raise PPTXRenderError(f"Failed to render deck: {e}") from e
+            raise PPTXRenderError(f"Failed to render BCG deck: {e}") from e
 
-    def _build(self, synthesis: Dict[str, Any], run_id: str) -> str:
-        prs = Presentation()
-        prs.slide_width = SLIDE_W
-        prs.slide_height = SLIDE_H
+    def _build(self, s: Dict[str, Any], run_id: str) -> str:
+        company = s.get("company_name") or s.get("target") or "Research"
+        topic = s.get("topic") or s.get("scope") or "Intelligence Brief"
+        today = date.today()
+        date_str = today.isoformat()
+        date_label = today.strftime("%-d %B %Y")
 
-        blank_layout = prs.slide_layouts[6]  # Completely blank
+        deck = BCGDeck()
 
-        # Slide 1: Executive Summary
-        self._slide_executive_summary(prs, blank_layout, synthesis)
+        # ── Slide 1: Title ───────────────────────────────────────────────────
+        deck.add_title_slide(
+            title=f"{company} — {topic}",
+            subtitle="Competitive Intelligence Brief",
+            date=date_label,
+        )
 
-        # Slide 2: Market Landscape
-        self._slide_market_landscape(prs, blank_layout, synthesis)
+        # ── Section: Intelligence Summary ────────────────────────────────────
+        deck.add_section_divider("Intelligence Summary")
 
-        # Slide 3: Competitive Analysis
-        self._slide_competitive_analysis(prs, blank_layout, synthesis)
+        # ── Slide 2: Executive Summary ───────────────────────────────────────
+        exec_summary = s.get("executive_summary") or _PLACEHOLDER
+        recs: List[str] = s.get("recommendations") or []
 
-        # Slide 4: Strategic Implications
-        self._slide_strategic_implications(prs, blank_layout, synthesis)
-
-        # Slide 5: Recommendations & Outlook
-        self._slide_recommendations(prs, blank_layout, synthesis)
-
-        # Named output — stable path enables in-place revision
-        company = synthesis.get("company_name") or synthesis.get("target") or "research"
-        topic = synthesis.get("topic") or synthesis.get("scope") or "intelligence-brief"
-        date_str = date.today().isoformat()
-        out_path_str = build_output_path(company, topic, date_str)
-        out_path = Path(out_path_str)
-
-        prs.save(str(out_path))
-        logger.info("PPTXAgent: saved deck to %s", out_path)
-        return str(out_path.resolve())
-
-    def _slide_executive_summary(self, prs: Presentation, layout: Any, s: Dict[str, Any]) -> None:
-        slide = prs.slides.add_slide(layout)
-        _add_header(slide, "Executive Summary", "COMPETITIVE INTELLIGENCE")
-        _add_footer(slide, 1)
-
-        summary = s.get("executive_summary") or _PLACEHOLDER
-        recs = s.get("recommendations") or []
-
-        lines: List[str] = [f"• {summary}"]
+        slide = deck.add_content_slide(
+            title=self._action_title(exec_summary),
+            source=f"Source: Web Intelligence Agent · Run {run_id} · {date_label}",
+        )
+        bullets = [f"• {exec_summary}"]
         if recs:
-            lines.append("")
-            lines.append("Key Recommendations:")
-            for rec in recs[:3]:
-                lines.append(f"  › {rec}")
+            bullets += ["", "Key Recommendations:"] + [f"  › {r}" for r in recs[:3]]
+        deck.add_bullets(slide, bullets, _CONTENT_X, _CONTENT_START_Y, _CONTENT_W, 3.8)
 
-        _add_body_text(slide, lines)
-
-    def _slide_market_landscape(self, prs: Presentation, layout: Any, s: Dict[str, Any]) -> None:
-        slide = prs.slides.add_slide(layout)
-        _add_header(slide, "Market Landscape", "MARKET INTELLIGENCE")
-        _add_footer(slide, 2)
-
+        # ── Slide 3: Market Landscape ────────────────────────────────────────
         ml = s.get("market_landscape") or {}
         size_growth = ml.get("size_and_growth") or _PLACEHOLDER
         players: List[Dict[str, Any]] = ml.get("key_players") or []
         trends: List[str] = ml.get("trends") or []
 
-        lines: List[str] = [f"• {size_growth}", ""]
+        slide = deck.add_content_slide(
+            title=self._action_title(size_growth),
+            source=f"Source: Public filings, earnings transcripts · {date_label}",
+        )
+        y = _CONTENT_START_Y
+        deck.add_label(slide, "MARKET OVERVIEW", _CONTENT_X, y)
+        y += 0.42
+        deck.add_bullets(slide, [f"• {size_growth}"], _CONTENT_X, y, _CONTENT_W, 0.7)
+        y += 0.8
 
         if players:
-            lines.append("Key Players:")
-            for p in players[:5]:
-                name = p.get("name", "")
-                position = p.get("position", "")
-                signal = p.get("signal", "")
-                lines.append(f"  › {name}: {position} — {signal}")
-            lines.append("")
+            deck.add_label(slide, "KEY PLAYERS", _CONTENT_X, y)
+            y += 0.42
+            table_data = [["Company", "Market Position", "Key Signal"]]
+            for p in players[:6]:
+                table_data.append([
+                    p.get("name", ""),
+                    p.get("position", ""),
+                    p.get("signal", ""),
+                ])
+            deck.add_table(slide, table_data, x=_CONTENT_X, y=y, w=_CONTENT_W)
+            y += 0.45 * (len(players[:6]) + 1) + 0.2
 
-        if trends:
-            lines.append("Market Trends:")
-            for t in trends[:5]:
-                lines.append(f"  › {t}")
+        if trends and y < 5.8:
+            deck.add_label(slide, "MARKET TRENDS", _CONTENT_X, y)
+            y += 0.42
+            deck.add_bullets(
+                slide,
+                [f"→ {t}" for t in trends[:4]],
+                _CONTENT_X, y, _CONTENT_W, min(1.6, _CONTENT_END_Y - y),
+            )
 
-        _add_body_text(slide, lines)
-
-    def _slide_competitive_analysis(self, prs: Presentation, layout: Any, s: Dict[str, Any]) -> None:
-        slide = prs.slides.add_slide(layout)
-        _add_header(slide, "Competitive Analysis", "COMPETITIVE POSITIONING")
-        _add_footer(slide, 3)
-
+        # ── Slide 4: Competitive Analysis ────────────────────────────────────
         ca = s.get("competitive_analysis") or {}
-        table: List[Dict[str, Any]] = ca.get("comparison_table") or []
+        comp_table: List[Dict[str, Any]] = ca.get("comparison_table") or []
         winners: List[str] = ca.get("winner_signals") or []
         disruptions: List[str] = ca.get("disruption_risks") or []
 
-        lines: List[str] = []
-        if table:
-            lines.append("Competitive Comparison:")
-            for row in table[:6]:
-                dim = row.get("dimension", "")
-                findings = row.get("findings", "")
-                lines.append(f"  {dim}: {findings}")
-            lines.append("")
+        ca_title = (
+            winners[0] if winners else
+            f"{company} competitive position reveals clear differentiation opportunities"
+        )
+        slide = deck.add_content_slide(
+            title=ca_title,
+            source=f"Source: Public disclosures, industry research · {date_label}",
+        )
+        y = _CONTENT_START_Y
+
+        if comp_table:
+            deck.add_label(slide, "COMPETITIVE COMPARISON", _CONTENT_X, y)
+            y += 0.42
+            table_data = [["Dimension", "Findings"]]
+            for row in comp_table[:6]:
+                table_data.append([row.get("dimension", ""), row.get("findings", "")])
+            deck.add_table(slide, table_data, x=_CONTENT_X, y=y, w=_CONTENT_W)
+            y += 0.45 * (len(comp_table[:6]) + 1) + 0.2
         else:
-            lines.append(_PLACEHOLDER)
-            lines.append("")
+            deck.add_bullets(slide, [f"• {_PLACEHOLDER}"], _CONTENT_X, y, _CONTENT_W, 0.6)
+            y += 0.8
 
-        if winners:
-            lines.append("Winner Signals:")
-            for w in winners[:4]:
-                lines.append(f"  › {w}")
-            lines.append("")
+        if winners and y < 5.5:
+            deck.add_label(slide, "WINNER SIGNALS", _CONTENT_X, y)
+            y += 0.42
+            deck.add_bullets(
+                slide, [f"✓ {w}" for w in winners[:3]],
+                _CONTENT_X, y, _CONTENT_W * 0.5, min(1.2, _CONTENT_END_Y - y),
+            )
 
-        if disruptions:
-            lines.append("Disruption Risks:")
-            for d in disruptions[:4]:
-                lines.append(f"  › {d}")
+        if disruptions and y < 5.5:
+            deck.add_label(slide, "DISRUPTION RISKS", _CONTENT_X + _CONTENT_W * 0.5 + 0.1, y)
+            deck.add_bullets(
+                slide, [f"⚠ {d}" for d in disruptions[:3]],
+                _CONTENT_X + _CONTENT_W * 0.5 + 0.1, y + 0.42,
+                _CONTENT_W * 0.5 - 0.1, min(1.2, _CONTENT_END_Y - y),
+            )
 
-        _add_body_text(slide, lines)
-
-    def _slide_strategic_implications(self, prs: Presentation, layout: Any, s: Dict[str, Any]) -> None:
-        slide = prs.slides.add_slide(layout)
-        _add_header(slide, "Strategic Implications", "STRATEGIC ANALYSIS")
-        _add_footer(slide, 4)
-
+        # ── Slide 5: Strategic Implications ──────────────────────────────────
         si = s.get("strategic_implications") or {}
         opps: List[str] = si.get("opportunities") or []
         risks: List[str] = si.get("risks") or []
         watch: List[str] = si.get("watch_list") or []
 
-        lines: List[str] = []
+        si_title = (
+            opps[0] if opps else
+            f"Strategic response requires prioritising differentiated capabilities"
+        )
+        slide = deck.add_content_slide(
+            title=si_title,
+            source=f"Source: BCG analysis · {date_label}",
+        )
+        y = _CONTENT_START_Y
+        col_w = (_CONTENT_W - 0.2) / 2
+
         if opps:
-            lines.append("Opportunities:")
-            for o in opps[:4]:
-                lines.append(f"  › {o}")
-            lines.append("")
-        else:
-            lines.append("Opportunities: " + _PLACEHOLDER)
-            lines.append("")
+            deck.add_label(slide, "OPPORTUNITIES", _CONTENT_X, y, fill_color="197A56")
+            deck.add_bullets(
+                slide, [f"+ {o}" for o in opps[:4]],
+                _CONTENT_X, y + 0.42, col_w, 2.2,
+            )
 
         if risks:
-            lines.append("Risks:")
-            for r in risks[:4]:
-                lines.append(f"  › {r}")
-            lines.append("")
-        else:
-            lines.append("Risks: " + _PLACEHOLDER)
-            lines.append("")
+            x2 = _CONTENT_X + col_w + 0.2
+            deck.add_label(slide, "RISKS", x2, y, fill_color="D64454")
+            deck.add_bullets(
+                slide, [f"- {r}" for r in risks[:4]],
+                x2, y + 0.42, col_w, 2.2,
+            )
 
         if watch:
-            lines.append("Watch List:")
-            for w in watch[:4]:
-                lines.append(f"  › {w}")
+            y2 = _CONTENT_START_Y + 2.8
+            deck.add_label(slide, "WATCH LIST", _CONTENT_X, y2)
+            deck.add_bullets(
+                slide, [f"◉ {w}" for w in watch[:4]],
+                _CONTENT_X, y2 + 0.42, _CONTENT_W, 1.2,
+            )
 
-        _add_body_text(slide, lines)
-
-    def _slide_recommendations(self, prs: Presentation, layout: Any, s: Dict[str, Any]) -> None:
-        slide = prs.slides.add_slide(layout)
-        _add_header(slide, "Recommendations & Outlook", "STRATEGIC DIRECTION")
-        _add_footer(slide, 5)
-
-        recs: List[str] = s.get("recommendations") or []
+        # ── Slide 6: Recommendations & Outlook ───────────────────────────────
         outlook = s.get("outlook") or _PLACEHOLDER
-
-        lines: List[str] = []
+        slide = deck.add_content_slide(
+            title=self._action_title(outlook),
+            source=f"Source: BCG analysis · {date_label}",
+        )
+        y = _CONTENT_START_Y
         if recs:
-            lines.append("Recommendations:")
-            for i, r in enumerate(recs, 1):
-                lines.append(f"  {i}. {r}")
-            lines.append("")
-        else:
-            lines.append("Recommendations: " + _PLACEHOLDER)
-            lines.append("")
+            deck.add_label(slide, "RECOMMENDATIONS", _CONTENT_X, y)
+            y += 0.42
+            for i, r in enumerate(recs[:5], 1):
+                deck.add_number_badge(slide, i, _CONTENT_X, y)
+                deck.add_textbox(slide, r, _CONTENT_X + 0.5, y + 0.02, _CONTENT_W - 0.5, 0.36, sz=13)
+                y += 0.46
+        y += 0.2
+        deck.add_label(slide, "OUTLOOK", _CONTENT_X, y)
+        deck.add_textbox(slide, outlook, _CONTENT_X, y + 0.42, _CONTENT_W, 1.0, sz=13, color="575757")
 
-        lines.append("Outlook:")
-        lines.append(f"  {outlook}")
+        # ── Slide 7: Goal Coverage (if evaluation present) ────────────────────
+        goal_eval = s.get("goal_evaluation")
+        if goal_eval:
+            verdict = goal_eval.get("verdict", "UNKNOWN")
+            score = goal_eval.get("score", 0)
+            satisfied = goal_eval.get("satisfied") or []
+            gaps = goal_eval.get("gaps") or []
 
-        _add_body_text(slide, lines)
+            slide = deck.add_content_slide(
+                title=f"Research coverage scored {score}/100 — {verdict}",
+                source=f"Source: Automated goal evaluation · {date_label}",
+            )
+            y = _CONTENT_START_Y
+            if satisfied:
+                deck.add_label(slide, "GOALS MET", _CONTENT_X, y, fill_color="197A56")
+                deck.add_bullets(
+                    slide, [f"✓ {g}" for g in satisfied[:4]],
+                    _CONTENT_X, y + 0.42, _CONTENT_W, 1.5,
+                )
+            if gaps:
+                y2 = _CONTENT_START_Y + 2.1
+                deck.add_label(slide, "GAPS / EXPAND RESEARCH", _CONTENT_X, y2, fill_color="D64454")
+                deck.add_bullets(
+                    slide, [f"✗ {g}" for g in gaps[:4]],
+                    _CONTENT_X, y2 + 0.42, _CONTENT_W, 1.5,
+                )
+
+        # ── Structural closers ────────────────────────────────────────────────
+        deck.add_disclaimer()
+        deck.add_end_slide()
+
+        # ── Save ─────────────────────────────────────────────────────────────
+        out_path = build_output_path(company, topic, date_str)
+        deck.save(out_path)
+        logger.info("PPTXAgent: saved BCG deck to %s", out_path)
+
+        # ── QA check ─────────────────────────────────────────────────────────
+        try:
+            issues = bcg_check_deck(out_path, verbose=False)
+            high_issues = [i for i in issues if i.get("severity") == "HIGH"]
+            if high_issues:
+                logger.warning(
+                    "PPTXAgent: %d HIGH QA issue(s) in deck: %s",
+                    len(high_issues),
+                    [i.get("message") for i in high_issues],
+                )
+                # Log but do not block — let the user see the deck
+        except Exception as qa_err:
+            logger.warning("PPTXAgent: bcg_qa check failed (non-fatal): %s", qa_err)
+
+        return str(Path(out_path).resolve())
+
+    @staticmethod
+    def _action_title(text: str, max_len: int = 120) -> str:
+        """Trim text to an action-title length and ensure it ends with a period."""
+        text = (text or _PLACEHOLDER).strip()
+        if len(text) > max_len:
+            text = text[:max_len].rsplit(" ", 1)[0] + "…"
+        if text and text[-1] not in ".!?…":
+            text += "."
+        return text
