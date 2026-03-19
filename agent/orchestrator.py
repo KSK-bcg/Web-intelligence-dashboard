@@ -4,7 +4,11 @@ Goal Orchestrator — decomposes NL goals into crawl + analyze pipelines.
 
 Flow:
   User goal -> Claude classifies -> selects crawl + analysis agents -> runs pipeline
+
+Multi-source: _classify_goal returns source_types (list); _crawl fans out in parallel
+via asyncio.gather and merges all results before analysis.
 """
+import asyncio
 import json
 import logging
 import os
@@ -34,8 +38,7 @@ Goal: {goal}
 
 Return ONLY valid JSON (no markdown, no explanation):
 {{
-  "source_type": "linkedin",
-  "analysis_type": "org_chart",
+  "source_types": ["linkedin"],
   "target": "company-slug-for-storage",
   "company_name": "Company Name",
   "department_filter": "IT",
@@ -46,16 +49,19 @@ Return ONLY valid JSON (no markdown, no explanation):
   "region": null
 }}
 
-Rules:
-- If the goal is about a blog or website: source_type="blog", url=the URL
-- If the goal is about LinkedIn org structure: source_type="linkedin"
-- If the goal is about financial filings/P&L for a company: source_type="financial", companies=list of company names
-- If the goal is about market landscape or industry intelligence: source_type="market_intel", companies=main companies mentioned
-- If the goal is about competitive analysis across companies: source_type="synthesis", companies=list of company names
-- If the goal asks for a board deck, presentation, or slide deck: source_type="board_deck", companies=list of company names
+Rules for source_types (MUST be a JSON array — include ALL that apply):
+- LinkedIn org structure / people → include "linkedin"
+- Blog or website URL → include "blog"
+- Financial filings / P&L / earnings → include "financial"
+- Market landscape / industry intelligence → include "market_intel"
+- Competitive analysis across companies → include "synthesis"
+- Board deck / presentation explicitly requested → include "board_deck"
+- Multi-faceted goals (e.g. org chart + financials) → include ALL matching types
 
-For board_deck, market_intel, financial, synthesis goals: populate "sector" (e.g. "health IT") and "region" (e.g. "APAC") if mentioned.
+For financial/market_intel/synthesis/board_deck: populate "sector" (e.g. "health IT") and "region" (e.g. "APAC") if mentioned.
 """
+
+BOARD_DECK_TYPES = {"board_deck", "market_intel", "synthesis", "financial"}
 
 
 class Orchestrator:
@@ -74,8 +80,6 @@ class Orchestrator:
 
         target = plan.get("target") or "unknown"
 
-        # Use existing run_id for re-runs (enables change detection diff).
-        # Create a new run_id only when no hint is provided.
         if run_id_hint:
             run_id = run_id_hint
             existing = self.store.get_run(run_id)
@@ -85,31 +89,35 @@ class Orchestrator:
             run_id = self.store.create_run(goal=goal, target=target)
 
         try:
-            source_type = plan.get("source_type", "linkedin")
+            source_types = plan.get("source_types") or ["linkedin"]
 
-            # Step 1: Crawl
+            # Step 1: Fan-out crawl in parallel across all source types
             raw_data = await self._crawl(plan)
 
-            # Step 2: Route to pipeline based on goal type
-            if source_type in ("board_deck", "market_intel", "synthesis", "financial"):
-                pipeline_result = await self._run_board_deck_pipeline(plan, raw_data, run_id)
+            # Step 2: Route to pipeline
+            use_board_deck = bool(BOARD_DECK_TYPES.intersection(set(source_types)))
+            has_people_source = bool({"linkedin", "blog"}.intersection(set(source_types)))
+
+            if use_board_deck:
+                pipeline_result = await self._run_board_deck_pipeline(
+                    plan, raw_data, run_id, include_people=has_people_source
+                )
                 self.store.complete_run(run_id)
-
-                # Build report path for HTML (use report_path if viz generates one, else None)
-                report_path = None
                 pptx_path = pipeline_result.get("pptx_path")
+                if pptx_path:
+                    self.store.update_pptx_path(run_id, pptx_path)
                 logger.info("Pipeline complete. PPTX: %s", pptx_path)
-
                 return {
                     "run_id": run_id,
-                    "report_path": report_path,
+                    "report_path": None,
                     "pptx_path": pptx_path,
+                    "pptx_available": bool(pptx_path),
                     "changes": [],
-                    "people_count": 0,
+                    "people_count": len([d for d in raw_data if "name" in d]),
                     "synthesis": pipeline_result.get("synthesis"),
                 }
             else:
-                # Original LinkedIn/blog pipeline
+                # LinkedIn / blog pipeline → HTML org chart report
                 people = self.normalizer.normalize(raw_data)
                 for person in people:
                     self.store.save_person(run_id=run_id, person={
@@ -121,7 +129,6 @@ class Orchestrator:
                 quant_result = await QuantAgent().run(people=people)
                 qual_result = await QualAgent().run(people=people)
 
-                # Step 4: Change detection
                 prior_run = self.store.get_latest_run_for_target(target, exclude_run_id=run_id)
                 changes_dicts: List[dict] = []
                 if prior_run:
@@ -153,6 +160,7 @@ class Orchestrator:
                     "run_id": run_id,
                     "report_path": report_path,
                     "pptx_path": None,
+                    "pptx_available": False,
                     "changes": changes_dicts,
                     "people_count": len(people),
                 }
@@ -160,11 +168,13 @@ class Orchestrator:
             self.store.fail_run(run_id)
             raise
 
-    async def _run_board_deck_pipeline(self, plan: dict, raw_data: list, run_id: str) -> dict:
+    async def _run_board_deck_pipeline(
+        self, plan: dict, raw_data: list, run_id: str, include_people: bool = False
+    ) -> dict:
         """Run full board deck pipeline: qual + financial + synthesis + pptx."""
-        qual_result = await QualAgent().run(people=[])
+        people_data = [d for d in raw_data if "name" in d] if include_people else []
+        qual_result = await QualAgent().run(people=people_data)
 
-        # Financial extraction — only if filing items present
         filing_items = [d for d in raw_data if d.get("source") == "filing"]
         if filing_items:
             financial_results = await FinancialAgent().run(raw_data)
@@ -195,13 +205,18 @@ class Orchestrator:
                 messages=[{"role": "user", "content": prompt}],
             )
             text = response.content[0].text
-            # Strip markdown code fences if present
             text = re.sub(r'```(?:json)?\s*', '', text).strip().rstrip('`')
-            return json.loads(text)
+            data = json.loads(text)
+            # Back-compat: old single source_type → list
+            if "source_type" in data and "source_types" not in data:
+                data["source_types"] = [data["source_type"]]
+            elif "source_types" not in data:
+                data["source_types"] = ["linkedin"]
+            return data
         except Exception as e:
             logger.warning("Goal classification failed (%s), defaulting to LinkedIn", e)
             return {
-                "source_type": "linkedin",
+                "source_types": ["linkedin"],
                 "analysis_type": "org_chart",
                 "target": goal.lower().replace(" ", "-")[:20],
                 "company_name": goal,
@@ -211,7 +226,20 @@ class Orchestrator:
             }
 
     async def _crawl(self, plan: dict) -> list:
-        source_type = plan.get("source_type", "linkedin")
+        """Fan out to all source_types in parallel, merge results."""
+        source_types = plan.get("source_types") or ["linkedin"]
+        tasks = [self._crawl_one(st, plan) for st in source_types]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        merged = []
+        for st, result in zip(source_types, results):
+            if isinstance(result, Exception):
+                logger.warning("Crawler %s failed: %s", st, result)
+            else:
+                merged.extend(result)
+        return merged
+
+    async def _crawl_one(self, source_type: str, plan: dict) -> list:
+        """Run a single crawler by source_type."""
         if source_type == "linkedin":
             crawler = LinkedInCrawler(max_profiles=int(plan.get("max_profiles") or 30))
             return await crawler.run(
@@ -219,8 +247,7 @@ class Orchestrator:
                 department_filter=plan.get("department_filter"),
             )
         elif source_type == "blog":
-            crawler = BlogCrawler()
-            return await crawler.run(url=plan.get("url", ""), max_pages=20)
+            return await BlogCrawler().run(url=plan.get("url", ""), max_pages=20)
         elif source_type == "financial":
             companies = plan.get("companies") or [plan.get("company_name", "")]
             return await FilingsCrawler().run(companies=companies)
@@ -244,5 +271,4 @@ class Orchestrator:
                 earnings = []
             return filings + earnings
         else:
-            crawler = BlogCrawler()
-            return await crawler.run(url=plan.get("url", ""), max_pages=20)
+            return await BlogCrawler().run(url=plan.get("url", ""), max_pages=20)

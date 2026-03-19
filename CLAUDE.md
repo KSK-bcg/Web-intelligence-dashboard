@@ -99,6 +99,21 @@ python run.py --list-runs
 python run.py --goal "Refresh Roche IT" --run-id <prior-run-id>
 ```
 
+## PowerPoint / Board Deck Generation
+
+**Always use BCG style** when generating `.pptx` output from this project.
+
+- Invoke the `bcg-slide-generator` skill before writing any deck code
+- Also invoke `bcg-pptx-charts` skill whenever the deck includes charts, KPI tiles, or data visualization
+- Use `~/bcg_build/scripts/bcg_template.py` + `~/bcg_build/assets/BCG_Master_16-9_Default.pptx` as the base
+- Run `check_setup()` before building; run `bcg_qa.check_deck()` after — 0 HIGH issues required before shipping
+- BCG color palette: Green `29BA74`, Dark Text `575757`, White `FFFFFF`, Dark Green `197A56`
+- All body text ≥ 14pt; action titles = complete sentences stating the "so what"
+- Every deck must end with `deck.add_disclaimer()` then `deck.add_end_slide()`
+- Output to `output/<run-id>/` with filename `YYYYMMDD_<Topic>.pptx`
+
+Reference deck: `output/24d6fc82/Mayo_Clinic_Financial_Intelligence_Brief.pptx`
+
 ## Project Structure
 
 ```

@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,6 +11,23 @@ from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
 from agent.exceptions import PPTXRenderError
+
+
+def build_output_path(company: str, topic: str, date_str: str, output_dir: str = "output") -> str:
+    """Build a stable, human-readable PPTX path.
+
+    Same company + topic + date always returns the same path, enabling in-place revision
+    without creating duplicate files.
+    """
+    def slugify(s: str) -> str:
+        s = s.lower().strip()
+        s = re.sub(r"[^\w\s-]", "", s)
+        s = re.sub(r"[\s_]+", "-", s)
+        return s[:40].strip("-")
+
+    filename = f"{slugify(company)}-{slugify(topic)}-{date_str}.pptx"
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    return str(Path(output_dir) / filename)
 
 logger = logging.getLogger(__name__)
 
@@ -134,14 +152,15 @@ class PPTXAgent:
         """
         Render a 5-slide BCG deck from synthesis data.
 
+        Output path is derived from company + topic + date so the same research
+        always writes to the same file. Revisions overwrite in-place — no duplicates.
+
         Args:
             synthesis: Output from SynthesisAgent.run()
-            run_id: Used to determine output path
+            run_id: Stored in footer / metadata only
 
         Returns:
             Absolute path to the generated .pptx file
-
-        Never raises PPTXRenderError — logs and returns partial deck on error.
         """
         try:
             return self._build(synthesis, run_id)
@@ -171,10 +190,13 @@ class PPTXAgent:
         # Slide 5: Recommendations & Outlook
         self._slide_recommendations(prs, blank_layout, synthesis)
 
-        # Save output
-        out_dir = Path(f"output/{run_id}")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / "board-deck.pptx"
+        # Named output — stable path enables in-place revision
+        company = synthesis.get("company_name") or synthesis.get("target") or "research"
+        topic = synthesis.get("topic") or synthesis.get("scope") or "intelligence-brief"
+        date_str = date.today().isoformat()
+        out_path_str = build_output_path(company, topic, date_str)
+        out_path = Path(out_path_str)
+
         prs.save(str(out_path))
         logger.info("PPTXAgent: saved deck to %s", out_path)
         return str(out_path.resolve())

@@ -12,6 +12,7 @@ class RunRecord(SQLModel, table=True):
     status: str = "running"  # running | complete | failed
     created_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
+    pptx_path: Optional[str] = None  # stable named path, e.g. output/roche-it-2026-03-19.pptx
 
 
 class PersonRecord(SQLModel, table=True):
@@ -85,6 +86,14 @@ class Store:
             if run:
                 run.status = "failed"
                 run.completed_at = datetime.utcnow()
+                session.add(run)
+                session.commit()
+
+    def update_pptx_path(self, run_id: str, pptx_path: str):
+        with Session(self.engine) as session:
+            run = session.get(RunRecord, run_id)
+            if run:
+                run.pptx_path = pptx_path
                 session.add(run)
                 session.commit()
 

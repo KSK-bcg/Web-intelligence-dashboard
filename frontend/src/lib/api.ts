@@ -64,3 +64,45 @@ export function getReportUrl(runId: string): string {
 export function getDeckUrl(runId: string): string {
   return `${API_BASE}/report/${runId}/deck?x-api-key=${API_KEY}`;
 }
+
+export interface ClarifyResult {
+  questions: string[];
+  refined_context: Record<string, string | null>;
+}
+
+export async function clarifyGoal(goal: string): Promise<ClarifyResult> {
+  const res = await fetch(`${API_BASE}/clarify`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ goal }),
+  });
+  if (!res.ok) await apiError(res, `Clarify failed: ${res.status}`);
+  return res.json();
+}
+
+export async function refineGoal(
+  goal: string,
+  answers: Record<string, string>
+): Promise<string> {
+  const res = await fetch(`${API_BASE}/refine`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ goal, answers }),
+  });
+  if (!res.ok) await apiError(res, `Refine failed: ${res.status}`);
+  const data = await res.json();
+  return data.refined_goal;
+}
+
+export async function reviseRun(
+  runId: string,
+  revisionNotes: string
+): Promise<RunResult> {
+  const res = await fetch(`${API_BASE}/revise`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ run_id: runId, revision_notes: revisionNotes }),
+  });
+  if (!res.ok) await apiError(res, `Revise failed: ${res.status}`);
+  return res.json();
+}
