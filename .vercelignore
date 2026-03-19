@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+output/
+agent/
+api/
+run.py
+requirements.txt
+tests/
+intelligence.db
+*.pptx
+*.pdf
