@@ -116,6 +116,7 @@ export default function Home() {
   const [progressLog, setProgressLog] = useState<string[]>([]);
   const [lastResult, setLastResult] = useState<RunResult | null>(null);
   const streamCleanupRef = useRef<(() => void) | null>(null);
+  const isSubmittingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -161,6 +162,8 @@ export default function Home() {
   }
 
   const executeRun = useCallback(async (finalGoal: string) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     setPhase("running");
     setProgressLog(["🚀 Starting research pipeline..."]);
     setLastResult(null);
@@ -172,12 +175,14 @@ export default function Home() {
       const cleanup = subscribeToRun(run_id, {
         onProgress: (msg) => setProgressLog((prev) => [...prev, msg]),
         onDone: async (result) => {
+          isSubmittingRef.current = false;
           setLastResult(result);
           setPhase("done");
           const updated = await listRuns();
           setRuns(updated);
         },
         onError: (msg) => {
+          isSubmittingRef.current = false;
           setError(msg);
           setPhase("done");
           listRuns().then(setRuns).catch(() => {});
@@ -185,6 +190,7 @@ export default function Home() {
       });
       streamCleanupRef.current = cleanup;
     } catch (e: unknown) {
+      isSubmittingRef.current = false;
       setError(e instanceof Error ? e.message : "Run failed to start");
       setPhase("done");
     }

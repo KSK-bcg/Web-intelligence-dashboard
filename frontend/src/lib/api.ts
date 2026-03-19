@@ -132,7 +132,8 @@ export function subscribeToRun(
       }
       reconnectAttempts++;
       const delay = Math.min(2000 * reconnectAttempts, 15000);
-      callbacks.onProgress(`⟳ Connection dropped — reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/${MAX_RECONNECTS})...`);
+      // Silent reconnect — only log to console, not to progress UI
+      console.warn(`[SSE] Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECTS} in ${delay}ms`);
       reconnectTimer = setTimeout(connect, delay);
     };
   }
