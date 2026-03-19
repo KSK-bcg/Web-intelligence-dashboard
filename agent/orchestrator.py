@@ -109,11 +109,11 @@ class Orchestrator:
 
             # Step 1: Fan-out crawl in parallel across all source types
             try:
-                raw_data = await asyncio.wait_for(self._crawl(plan), timeout=300.0)
+                raw_data = await asyncio.wait_for(self._crawl(plan), timeout=1200.0)  # 20 min for deep research
             except asyncio.TimeoutError:
                 logger.error("Orchestrator: crawl timed out after 300s")
                 self.store.fail_run(run_id)
-                raise WebIntelligenceError("Research timed out after 5 minutes — try a more specific goal")
+                raise WebIntelligenceError("Research timed out after 20 minutes — try a more specific goal or reduce scope")
 
             # Step 2: Route to pipeline
             use_board_deck = bool(BOARD_DECK_TYPES.intersection(set(source_types)))
