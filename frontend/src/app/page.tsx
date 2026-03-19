@@ -8,6 +8,7 @@ import {
   clarifyGoal,
   refineGoal,
   subscribeToRun,
+  cancelRun,
   downloadDeck,
   getReportUrl,
   getDeckUrl,
@@ -115,6 +116,8 @@ export default function Home() {
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
   const [progressLog, setProgressLog] = useState<string[]>([]);
   const [lastResult, setLastResult] = useState<RunResult | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
   const streamCleanupRef = useRef<(() => void) | null>(null);
   const isSubmittingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -171,11 +174,13 @@ export default function Home() {
 
     try {
       const { run_id } = await startRun(finalGoal);
+      setActiveRunId(run_id);
 
       const cleanup = subscribeToRun(run_id, {
         onProgress: (msg) => setProgressLog((prev) => [...prev, msg]),
         onDone: async (result) => {
           isSubmittingRef.current = false;
+          setActiveRunId(null);
           setLastResult(result);
           setPhase("done");
           const updated = await listRuns();
@@ -183,6 +188,8 @@ export default function Home() {
         },
         onError: (msg) => {
           isSubmittingRef.current = false;
+          setActiveRunId(null);
+          setIsCancelling(false);
           setError(msg);
           setPhase("done");
           listRuns().then(setRuns).catch(() => {});
@@ -226,6 +233,36 @@ export default function Home() {
       setError(e instanceof Error ? e.message : "Revision failed to start");
       setPhase("done");
     }
+  }
+
+  async function handleCancelRun() {
+    if (!activeRunId || isCancelling) return;
+    setIsCancelling(true);
+    try {
+      await cancelRun(activeRunId);
+    } catch {
+      // SSE will surface the cancelled state
+    }
+  }
+
+  async function handleCancelHistoryRun(runId: string) {
+    try {
+      await cancelRun(runId);
+      const updated = await listRuns();
+      setRuns(updated);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Cancel failed");
+    }
+  }
+
+  function startNewResearch() {
+    // Keep active run going in background, reset UI for new research
+    streamCleanupRef.current?.();
+    streamCleanupRef.current = null;
+    isSubmittingRef.current = false;
+    setActiveRunId(null);
+    setIsCancelling(false);
+    reset();
   }
 
   function refreshRuns() {
@@ -705,6 +742,44 @@ export default function Home() {
                   RUNNING
                 </span>
               </div>
+              {/* Action buttons in terminal header */}
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  onClick={startNewResearch}
+                  style={{
+                    padding: "4px 10px",
+                    background: "transparent",
+                    border: "1px solid var(--border)",
+                    borderRadius: "5px",
+                    color: "var(--text-dim)",
+                    fontSize: "9px",
+                    fontFamily: "var(--font-geist-mono)",
+                    letterSpacing: "0.06em",
+                    cursor: "pointer",
+                  }}
+                  title="Keep this run going and start a new research goal"
+                >
+                  + NEW
+                </button>
+                <button
+                  onClick={handleCancelRun}
+                  disabled={isCancelling}
+                  style={{
+                    padding: "4px 10px",
+                    background: isCancelling ? "transparent" : "rgba(232,84,84,0.1)",
+                    border: "1px solid rgba(232,84,84,0.3)",
+                    borderRadius: "5px",
+                    color: "#E85454",
+                    fontSize: "9px",
+                    fontFamily: "var(--font-geist-mono)",
+                    letterSpacing: "0.06em",
+                    cursor: isCancelling ? "default" : "pointer",
+                    opacity: isCancelling ? 0.5 : 1,
+                  }}
+                >
+                  {isCancelling ? "CANCELLING..." : "⛔ KILL"}
+                </button>
+              </div>
             </div>
 
             {/* Source badges row */}
@@ -1054,6 +1129,24 @@ export default function Home() {
                           >
                             ↓ Deck
                           </a>
+                        )}
+                        {run.status === "running" && (
+                          <button
+                            onClick={() => handleCancelHistoryRun(run.id)}
+                            style={{
+                              fontSize: "11px",
+                              padding: "4px 10px",
+                              background: "rgba(232,84,84,0.08)",
+                              border: "1px solid rgba(232,84,84,0.25)",
+                              borderRadius: "6px",
+                              color: "#E85454",
+                              fontFamily: "var(--font-geist-mono)",
+                              cursor: "pointer",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            ⛔ Kill
+                          </button>
                         )}
                         <button
                           onClick={() =>

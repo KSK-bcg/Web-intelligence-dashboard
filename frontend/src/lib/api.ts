@@ -68,6 +68,16 @@ export async function startRun(goal: string, runId?: string): Promise<RunQueued>
   return res.json();
 }
 
+/** POST /run/{run_id}/cancel — cancel a running pipeline. */
+export async function cancelRun(runId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/run/${runId}/cancel`, {
+    method: "POST",
+    headers,
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) await apiError(res, `Cancel failed: ${res.status}`);
+}
+
 /** POST /revise — returns immediately with run_id. Revision runs in background. */
 export async function startRevision(runId: string, revisionNotes: string): Promise<RunQueued> {
   const res = await fetch(`${API_BASE}/revise`, {

@@ -31,7 +31,7 @@ app = FastAPI(title="Web Intelligence Agent API", docs_url=None, redoc_url=None)
 
 _cors_origins = os.environ.get(
     "CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003",
+    "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003,http://localhost:3004,http://localhost:3005",
 ).split(",")
 
 app.add_middleware(
@@ -44,6 +44,7 @@ app.add_middleware(
 # ── SSE event queues (run_id → asyncio.Queue) ─────────────────────────────────
 # Each queue holds dicts: {"type": "progress"|"done"|"error", "message": "..."}
 _run_queues: dict[str, asyncio.Queue] = {}
+_cancel_events: dict[str, asyncio.Event] = {}
 _RUN_ID_RE = re.compile(r"^[a-zA-Z0-9\-]{1,16}$")
 
 
@@ -112,6 +113,8 @@ async def _run_pipeline(run_id: str, goal: str, run_id_hint: Optional[str] = Non
     Pushes SSE events to _run_queues[run_id] throughout.
     """
     queue = _run_queues.setdefault(run_id, asyncio.Queue())
+    cancel_event = asyncio.Event()
+    _cancel_events[run_id] = cancel_event
     store = Store()
     store.init_db()
 
@@ -152,6 +155,7 @@ async def _run_pipeline(run_id: str, goal: str, run_id_hint: Optional[str] = Non
         # Keep queue alive for 5 minutes so late SSE subscribers can still read
         await asyncio.sleep(300)
         _run_queues.pop(run_id, None)
+        _cancel_events.pop(run_id, None)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -263,6 +267,30 @@ async def stream_run(
                 yield {"comment": "keepalive"}
 
     return EventSourceResponse(event_generator())
+
+
+@app.post("/run/{run_id}/cancel")
+async def cancel_run(run_id: str, _: str = Depends(verify_api_key)):
+    """Cancel a running pipeline. Marks run as failed and pushes cancel event to SSE stream."""
+    _validate_run_id(run_id)
+    store = Store()
+    store.init_db()
+    run = store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Signal cancellation to any waiting pipeline
+    event = _cancel_events.get(run_id)
+    if event:
+        event.set()
+
+    # Push cancel event to SSE queue so frontend knows immediately
+    queue = _run_queues.get(run_id)
+    if queue:
+        await queue.put({"type": "error", "message": "⛔ Run cancelled by user"})
+
+    store.fail_run(run_id)
+    return {"run_id": run_id, "status": "cancelled"}
 
 
 @app.post("/revise")

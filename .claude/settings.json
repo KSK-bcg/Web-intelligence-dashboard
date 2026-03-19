@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(sudo rm*)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | bash)",
+      "Bash(mkfs*)",
+      "Bash(dd if=*)",
+      "Write(~/.ssh/*)",
+      "Write(~/.aws/*)",
+      "Write(/etc/*)"
+    ]
+  }
+}

@@ -22,6 +22,11 @@ from agent.crawlers.blog import BlogCrawler
 from agent.crawlers.filings import FilingsCrawler
 from agent.crawlers.earnings import EarningsCrawler
 from agent.crawlers.web_research import WebResearchAgent
+from agent.crawlers.crunchbase import CrunchbaseCrawler
+from agent.crawlers.court_records import CourtRecordsCrawler
+from agent.crawlers.patents import PatentsCrawler
+from agent.crawlers.clinical_trials import ClinicalTrialsCrawler
+from agent.crawlers.news import NewsCrawler
 from agent.knowledge_graph import KnowledgeGraph
 from agent.analyzers.quant import QuantAgent
 from agent.analyzers.qual import QualAgent
@@ -61,7 +66,13 @@ Rules for source_types (MUST be a JSON array — include ALL that apply):
 - Competitive analysis across companies → include "synthesis"
 - Board deck / presentation explicitly requested → include "board_deck"
 - Open-ended research / intelligence with no specific structured source → include "web_research"
-- Multi-faceted goals (e.g. org chart + financials) → include ALL matching types
+- Startup funding, investors, venture capital → include "startup_intel"
+- Litigation, lawsuits, legal risk → include "legal"
+- Patents, IP, innovation pipeline → include "patents"
+- Clinical trials, drug studies, healthcare products → include "clinical"
+- Recent news, press releases, announcements → include "news"
+- Multi-faceted goals → include ALL matching types
+- GTM / competitive intelligence goals → ALWAYS include "web_research" + "news" + "startup_intel"
 
 For financial/market_intel/synthesis/board_deck/web_research: populate "sector" (e.g. "health IT") and "region" (e.g. "APAC") if mentioned.
 For web_research goals: populate "research_questions" as a JSON array of 3-6 specific, MECE sub-questions
@@ -76,7 +87,10 @@ that decompose the goal into answerable research questions. Example:
   ]
 """
 
-BOARD_DECK_TYPES = {"board_deck", "market_intel", "synthesis", "financial", "web_research"}
+BOARD_DECK_TYPES = {
+    "board_deck", "market_intel", "synthesis", "financial", "web_research",
+    "startup_intel", "legal", "patents", "clinical", "news",
+}
 
 
 class Orchestrator:
@@ -424,5 +438,60 @@ class Orchestrator:
                 logger.warning("EarningsCrawler failed: %s", e)
                 earnings = []
             return filings + earnings
+        elif source_type == "startup_intel":
+            company_name = plan.get("company_name") or plan.get("target") or ""
+            companies = plan.get("companies") or []
+            try:
+                return await CrunchbaseCrawler().run(
+                    company_name=company_name,
+                    companies=companies if companies else None,
+                )
+            except Exception as e:
+                logger.warning("CrunchbaseCrawler failed: %s", e)
+                return []
+        elif source_type == "legal":
+            company_name = plan.get("company_name") or plan.get("target") or ""
+            companies = plan.get("companies") or []
+            try:
+                return await CourtRecordsCrawler().run(
+                    company_name=company_name,
+                    companies=companies if companies else None,
+                )
+            except Exception as e:
+                logger.warning("CourtRecordsCrawler failed: %s", e)
+                return []
+        elif source_type == "patents":
+            company_name = plan.get("company_name") or plan.get("target") or ""
+            companies = plan.get("companies") or []
+            try:
+                return await PatentsCrawler().run(
+                    company_name=company_name,
+                    companies=companies if companies else None,
+                )
+            except Exception as e:
+                logger.warning("PatentsCrawler failed: %s", e)
+                return []
+        elif source_type == "clinical":
+            company_name = plan.get("company_name") or plan.get("target") or ""
+            companies = plan.get("companies") or []
+            try:
+                return await ClinicalTrialsCrawler().run(
+                    company_name=company_name,
+                    companies=companies if companies else None,
+                )
+            except Exception as e:
+                logger.warning("ClinicalTrialsCrawler failed: %s", e)
+                return []
+        elif source_type == "news":
+            company_name = plan.get("company_name") or plan.get("target") or ""
+            companies = plan.get("companies") or []
+            try:
+                return await NewsCrawler().run(
+                    company_name=company_name,
+                    companies=companies if companies else None,
+                )
+            except Exception as e:
+                logger.warning("NewsCrawler failed: %s", e)
+                return []
         else:
             return await BlogCrawler().run(url=plan.get("url", ""), max_pages=20)
