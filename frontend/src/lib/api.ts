@@ -62,7 +62,7 @@ export async function startRun(goal: string, runId?: string): Promise<RunQueued>
     method: "POST",
     headers,
     body: JSON.stringify({ goal, run_id: runId }),
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(60000),
   });
   if (!res.ok) await apiError(res, `Run failed: ${res.status}`);
   return res.json();
@@ -94,31 +94,56 @@ export function subscribeToRun(
   }
 ): () => void {
   const streamUrl = `${API_BASE}/run/${runId}/stream?api_key=${encodeURIComponent(API_KEY)}`;
-  const es = new EventSource(streamUrl);
+  let es: EventSource;
+  let closed = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempts = 0;
+  const MAX_RECONNECTS = 10;
 
-  es.onmessage = (event) => {
-    try {
-      const data: ProgressEvent = JSON.parse(event.data);
-      if (data.type === "progress") {
-        callbacks.onProgress(data.message);
-      } else if (data.type === "done") {
-        es.close();
-        callbacks.onDone(data.result || { run_id: runId });
-      } else if (data.type === "error") {
-        es.close();
-        callbacks.onError(data.message);
+  function connect() {
+    es = new EventSource(streamUrl);
+
+    es.onmessage = (event) => {
+      reconnectAttempts = 0; // reset on successful message
+      try {
+        const data: ProgressEvent = JSON.parse(event.data);
+        if (data.type === "progress") {
+          callbacks.onProgress(data.message);
+        } else if (data.type === "done") {
+          closed = true;
+          es.close();
+          callbacks.onDone(data.result || { run_id: runId });
+        } else if (data.type === "error") {
+          closed = true;
+          es.close();
+          callbacks.onError(data.message);
+        }
+      } catch {
+        // ignore malformed events
       }
-    } catch {
-      // ignore malformed events
-    }
-  };
+    };
 
-  es.onerror = () => {
+    es.onerror = () => {
+      es.close();
+      if (closed) return;
+      if (reconnectAttempts >= MAX_RECONNECTS) {
+        callbacks.onError("Lost connection to research stream after multiple retries — check server logs");
+        return;
+      }
+      reconnectAttempts++;
+      const delay = Math.min(2000 * reconnectAttempts, 15000);
+      callbacks.onProgress(`⟳ Connection dropped — reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/${MAX_RECONNECTS})...`);
+      reconnectTimer = setTimeout(connect, delay);
+    };
+  }
+
+  connect();
+
+  return () => {
+    closed = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
     es.close();
-    callbacks.onError("Lost connection to research stream — check server logs");
   };
-
-  return () => es.close();
 }
 
 /** Download the PPTX deck via fetch (header auth) and trigger browser download. */
