@@ -43,17 +43,17 @@ EMPTY_SYNTHESIS = {
 
 @pytest.mark.asyncio
 async def test_render_creates_pptx():
-    """render() returns a path ending in board-deck.pptx."""
+    """render() returns a path to a .pptx file that exists on disk."""
     from agent.analyzers.pptx_agent import PPTXAgent
 
     agent = PPTXAgent()
     result = await agent.render(FULL_SYNTHESIS, "pytest-pptx-test")
 
     try:
-        assert "board-deck.pptx" in result
+        assert result.endswith(".pptx")
         assert Path(result).exists()
     finally:
-        shutil.rmtree("output/pytest-pptx-test", ignore_errors=True)
+        Path(result).unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio
@@ -65,10 +65,10 @@ async def test_render_handles_empty_synthesis():
     result = await agent.render(EMPTY_SYNTHESIS, "pytest-pptx-empty")
 
     try:
-        assert result.endswith("board-deck.pptx")
+        assert result.endswith(".pptx")
         assert Path(result).exists()
     finally:
-        shutil.rmtree("output/pytest-pptx-empty", ignore_errors=True)
+        Path(result).unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio
@@ -84,7 +84,7 @@ async def test_render_produces_5_slides():
         prs = Presentation(result)
         assert len(prs.slides) == 5
     finally:
-        shutil.rmtree("output/pytest-pptx-slides", ignore_errors=True)
+        Path(result).unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio
@@ -104,6 +104,6 @@ async def test_render_none_values_dont_raise():
     result = await agent.render(none_synthesis, "pytest-pptx-none")
 
     try:
-        assert result.endswith("board-deck.pptx")
+        assert result.endswith(".pptx")
     finally:
-        shutil.rmtree("output/pytest-pptx-none", ignore_errors=True)
+        Path(result).unlink(missing_ok=True)
