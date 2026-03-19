@@ -63,6 +63,7 @@ Weights:
   recommendations_quality  15%
   sourcing                 10%
 """
+import asyncio
 import json
 import logging
 import os
@@ -243,7 +244,7 @@ class GoalEvaluator:
     def __init__(self) -> None:
         self.client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
-    def evaluate(self, goal: str, synthesis: Dict[str, Any]) -> Dict[str, Any]:
+    async def evaluate(self, goal: str, synthesis: Dict[str, Any]) -> Dict[str, Any]:
         """
         Score synthesis against the original goal using BCG consulting standards.
 
@@ -269,7 +270,8 @@ class GoalEvaluator:
         prompt = _EVAL_PROMPT.format(goal=goal, synthesis_summary=summary)
 
         try:
-            response = self.client.messages.create(
+            response = await asyncio.to_thread(
+                self.client.messages.create,
                 model="claude-opus-4-6",
                 max_tokens=1200,
                 messages=[{"role": "user", "content": prompt}],

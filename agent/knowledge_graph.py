@@ -10,6 +10,7 @@ Entity types extracted:
   trend       — market trends and themes
   risk        — identified risks and threats
 """
+import asyncio
 import json
 import logging
 import os
@@ -59,7 +60,7 @@ class KnowledgeGraph:
     def __init__(self) -> None:
         self._client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
-    def extract_entities(self, target: str, synthesis: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def extract_entities(self, target: str, synthesis: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Extract named entities from synthesis output using Claude Haiku (cheap + fast).
 
@@ -77,7 +78,8 @@ class KnowledgeGraph:
         prompt = _EXTRACT_PROMPT.format(target=target, synthesis_summary=summary[:6000])
 
         try:
-            response = self._client.messages.create(
+            response = await asyncio.to_thread(
+                self._client.messages.create,
                 model="claude-haiku-4-5-20251001",  # cheap, fast — entity extraction is mechanical
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}],

@@ -81,14 +81,14 @@ class PPTXAgent:
                 f"Ensure ~/bcg_build/scripts/ exists and dependencies are installed."
             )
         try:
-            return self._build(synthesis, run_id)
+            return await self._build(synthesis, run_id)
         except PPTXRenderError:
             raise
         except Exception as e:
             logger.error("PPTXAgent render error: %s", e)
             raise PPTXRenderError(f"Failed to render BCG deck: {e}") from e
 
-    def _build(self, s: Dict[str, Any], run_id: str) -> str:
+    async def _build(self, s: Dict[str, Any], run_id: str) -> str:
         company = s.get("company_name") or s.get("target") or "Research"
         topic = s.get("topic") or s.get("scope") or "Intelligence Brief"
         today = date.today()
@@ -97,7 +97,7 @@ class PPTXAgent:
 
         # Plan the narrative (P7: dynamic deck)
         original_goal = s.get("_original_goal") or s.get("topic") or topic
-        plan = NarrativePlanner().plan(goal=original_goal, synthesis=s)
+        plan = await NarrativePlanner().plan(goal=original_goal, synthesis=s)
         logger.info("PPTXAgent: narrative thesis='%s'", plan.thesis[:80] if plan.thesis else "default")
 
         deck = BCGDeck()

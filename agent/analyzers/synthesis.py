@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -201,7 +202,8 @@ class SynthesisAgent:
             qual_summary=qual_summary,
         )
 
-        response = self._client.messages.create(
+        response = await asyncio.to_thread(
+            self._client.messages.create,
             model="claude-opus-4-6",
             max_tokens=6000,
             messages=[{"role": "user", "content": prompt}],

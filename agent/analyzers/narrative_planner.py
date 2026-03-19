@@ -25,6 +25,7 @@ Rules:
   - 4–7 content slides total (excluding structural slides)
   - Choose the slides that best serve the research goal
 """
+import asyncio
 import json
 import logging
 import os
@@ -105,7 +106,7 @@ class NarrativePlanner:
     def __init__(self) -> None:
         self._client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
-    def plan(self, goal: str, synthesis: Dict[str, Any]) -> NarrativePlan:
+    async def plan(self, goal: str, synthesis: Dict[str, Any]) -> NarrativePlan:
         """
         Generate a narrative plan for the BCG deck.
 
@@ -121,7 +122,8 @@ class NarrativePlanner:
         prompt = _PLAN_PROMPT.format(goal=safe_goal, summary=summary[:3000])
 
         try:
-            response = self._client.messages.create(
+            response = await asyncio.to_thread(
+                self._client.messages.create,
                 model="claude-haiku-4-5-20251001",
                 max_tokens=800,
                 messages=[{"role": "user", "content": prompt}],

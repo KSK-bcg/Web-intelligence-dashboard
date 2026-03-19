@@ -50,7 +50,7 @@ async function apiError(res: Response, fallback: string): Promise<never> {
 export async function listRuns(): Promise<Run[]> {
   const res = await fetch(`${API_BASE}/runs`, {
     headers,
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) await apiError(res, `Failed to fetch runs: ${res.status}`);
   return res.json();

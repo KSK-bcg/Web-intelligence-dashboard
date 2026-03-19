@@ -235,7 +235,7 @@ class Orchestrator:
         synthesis["_original_goal"] = original_goal
         if original_goal:
             try:
-                evaluation = GoalEvaluator().evaluate(original_goal, synthesis)
+                evaluation = await GoalEvaluator().evaluate(original_goal, synthesis)
                 synthesis["goal_evaluation"] = evaluation
                 logger.info(
                     "GoalEvaluator: score=%s verdict=%s",
@@ -292,7 +292,7 @@ class Orchestrator:
                                 goal=original_goal,
                             )
                             # Re-evaluate
-                            evaluation2 = GoalEvaluator().evaluate(original_goal, synthesis)
+                            evaluation2 = await GoalEvaluator().evaluate(original_goal, synthesis)
                             synthesis["goal_evaluation"] = evaluation2
                             logger.info("Orchestrator: re-research complete — new score=%s verdict=%s",
                                        evaluation2.get("score"), evaluation2.get("verdict"))
@@ -301,7 +301,7 @@ class Orchestrator:
 
         # P6: Extract entities from final synthesis and persist for future runs
         try:
-            entities = KnowledgeGraph().extract_entities(target=target, synthesis=synthesis)
+            entities = await KnowledgeGraph().extract_entities(target=target, synthesis=synthesis)
             if entities:
                 self.store.save_entities(run_id=run_id, target=target, entities=entities)
                 logger.info("Orchestrator: saved %d entities for target '%s'", len(entities), target)
