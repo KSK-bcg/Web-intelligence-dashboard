@@ -47,6 +47,10 @@ class BlogCrawler(BaseAgent):
                 params={"limit": max_pages, "scrapeOptions": {"formats": ["markdown"]}},
             )
         except Exception as e:
+            err = str(e)
+            if "402" in err or "Payment Required" in err or "Insufficient credits" in err:
+                logger.warning("BlogCrawler: Firecrawl credits exhausted — skipping crawl")
+                return []
             raise FirecrawlFetchError(f"Failed to crawl {url}: {e}") from e
 
         articles = []

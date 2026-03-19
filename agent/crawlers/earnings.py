@@ -57,6 +57,10 @@ class EarningsCrawler:
         try:
             search_results = self._app.search(query, limit=max_results)
         except Exception as e:
+            err = str(e)
+            if "402" in err or "Payment Required" in err or "Insufficient credits" in err:
+                logger.warning("EarningsCrawler: Firecrawl credits exhausted — skipping earnings search")
+                return []
             raise EarningsFetchError(f"Firecrawl search failed: {e}") from e
 
         # firecrawl-py v4 returns SearchData with .web list of SearchResultWeb objects
@@ -85,6 +89,10 @@ class EarningsCrawler:
                         body = scrape.get("markdown", "")
                     await asyncio.sleep(DELAY_SECONDS)
                 except Exception as e:
+                    err = str(e)
+                    if "402" in err or "Payment Required" in err or "Insufficient credits" in err:
+                        logger.warning("EarningsCrawler: Firecrawl credits exhausted — stopping scrape")
+                        break
                     logger.warning("Failed to scrape %s: %s", url, e)
                     body = ""
 
